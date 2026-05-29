@@ -240,6 +240,52 @@ export function BoardroomApp() {
     }
   }
 
+  // Run each debate stage sequentially, showing messages as they arrive
+  async function runSessionStages({ conversationId: convId, nextStage, sessionState }: {
+    conversationId: string;
+    nextStage: string;
+    sessionState: unknown;
+  }) {
+    let currentStage = nextStage;
+    let currentState = sessionState;
+
+    while (currentStage && currentStage !== "done") {
+      try {
+        const stagePayload = await api(`/api/workspaces/${workspaceId}/chat/stage`, {
+          method: "POST",
+          body: JSON.stringify({
+            conversationId: convId,
+            nextStage: currentStage,
+            sessionState: currentState,
+            mode,
+            clientApiKey: clientKey || undefined,
+          }),
+        });
+
+        await displayMessagesWithTyping(stagePayload.messages || []);
+
+        currentStage = stagePayload.nextStage;
+        currentState = stagePayload.sessionState;
+
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Stage error.";
+        showToast(`❌ ${msg}`);
+        flushSync(() => setMessages(current => [...current, {
+          id: `err-${Date.now()}`,
+          workspace_id: workspaceId,
+          conversation_id: convId,
+          role: "system" as const,
+          speaker: "System",
+          content: `⚠️ ${msg}`,
+          stage: "error",
+          metadata: {},
+          created_at: new Date().toISOString(),
+        }]));
+        break;
+      }
+    }
+  }
+
   // Refresh workspace bundle (cards, docs, conversations list) WITHOUT resetting
   // messages, channel, or conversationId — used after sending a message
   async function refreshBundle(wid: string) {
@@ -295,7 +341,7 @@ export function BoardroomApp() {
         setConversationId(payload.conversationId);
       }
 
-      // Replace pending message with the real one from DB
+      // Replace pending message with real one from DB
       flushSync(() => {
         setTypingAdvisor(null);
         setMessages(current => {
@@ -304,8 +350,17 @@ export function BoardroomApp() {
         });
       });
 
-      // Animate advisor messages with proper typing indicators
+      // Show Tony's intake message(s) with typing animation
       await displayMessagesWithTyping(payload.messages || []);
+
+      // If there are more stages, run them sequentially showing each as it arrives
+      if (payload.nextStage && payload.nextStage !== "done" && payload.nextStage !== "clarify" && payload.sessionState) {
+        await runSessionStages({
+          conversationId: payload.conversationId || conversationId,
+          nextStage: payload.nextStage,
+          sessionState: payload.sessionState,
+        });
+      }
 
       // Refresh bundle (cards, docs) WITHOUT resetting messages or channel
       await refreshBundle(workspaceId);

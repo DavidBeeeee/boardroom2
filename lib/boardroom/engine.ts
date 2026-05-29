@@ -2,9 +2,30 @@ import type { AdvisorName, BoardroomTurn, GeneratedCard, Message, ModeContext } 
 import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket, BOARDROOM_GUARDRAILS } from "./advisors";
 import { callDeepSeek, type ChatMessage } from "./deepseek";
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Session State (passed between frontend and API stages) ────────────────────
 
-function parseJson<T>(raw: string): T {
+export type SessionState = {
+  userPrompt: string;
+  tonyIntakeMessage: string;
+  selectedAdvisors: AdvisorName[];
+  advisorQuestions: Record<string, string>;
+  tension: string;
+  allTurns: BoardroomTurn[];      // every turn so far this session
+  currentRound: number;           // how many advisor rounds completed
+  currentChanosRound: number;     // how many chanos rounds completed
+};
+
+export type StageResult = {
+  turns: BoardroomTurn[];
+  cards: GeneratedCard[];
+  tension: string;
+  nextStage: "advisor_round" | "chanos" | "tony_close" | "done";
+  sessionState: SessionState;
+};
+
+// ── Utilities ──────────────────────────────────────────────────────────────────
+
+export function parseJson<T>(raw: string): T {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const text = fenced ? fenced[1] : raw;
   const start = text.indexOf("{");
@@ -13,15 +34,15 @@ function parseJson<T>(raw: string): T {
   return JSON.parse(text) as T;
 }
 
-function canonicalAdvisor(name: unknown): AdvisorName {
+export function canonicalAdvisor(name: unknown): AdvisorName {
   const clean = String(name ?? "").trim().toLowerCase();
   if (clean === "jim" || clean === "james") return "Chanos";
   const match = (["Tony", ...ALL_ADVISORS] as AdvisorName[]).find(n => n.toLowerCase() === clean);
   return match ?? "Tony";
 }
 
-function historyMessages(history: Pick<Message, "role" | "speaker" | "content">[]): ChatMessage[] {
-  return history.slice(-8).map(m => ({
+export function historyMessages(history: Pick<Message, "role" | "speaker" | "content">[]): ChatMessage[] {
+  return history.slice(-12).map(m => ({
     role: m.role === "user" ? "user" : "assistant",
     content: m.role === "user" ? m.content : `${m.speaker}: ${m.content}`,
   }));
@@ -37,12 +58,12 @@ async function structured<T>(messages: ChatMessage[], clientApiKey: string | und
   catch { return fallback; }
 }
 
-function turnsToContext(turns: BoardroomTurn[]): string {
+export function turnsToContext(turns: BoardroomTurn[]): string {
   if (!turns.length) return "None yet.";
-  return turns.map(t => `${t.speaker} [${t.stage.replace(/_/g, " ")}]: ${t.content}`).join("\n\n");
+  return turns.map(t => `${t.speaker}: ${t.content}`).join("\n\n");
 }
 
-function normalizeCards(cards: GeneratedCard[], mode: ModeContext, decision: string): GeneratedCard[] {
+export function normalizeCards(cards: GeneratedCard[], mode: ModeContext, decision: string): GeneratedCard[] {
   return (cards ?? [])
     .filter((c): c is GeneratedCard => Boolean(c?.title))
     .map(c => ({
@@ -62,7 +83,395 @@ function normalizeCards(cards: GeneratedCard[], mode: ModeContext, decision: str
     .slice(0, mode.cardLimit);
 }
 
-// ── Main Engine ───────────────────────────────────────────────────────────────
+function nextStageFor(state: SessionState, mode: ModeContext): StageResult["nextStage"] {
+  const numRounds = mode.depth === "quick" ? 1 : mode.depth === "normal" ? 2 : 3;
+  const chanosRoundsNeeded = mode.depth === "quick" ? 1 : 2;
+
+  // Need more advisor rounds?
+  if (state.currentRound < numRounds && state.currentChanosRound >= state.currentRound) {
+    return "advisor_round";
+  }
+  // Need a Chanos round?
+  if (state.currentChanosRound < chanosRoundsNeeded && state.currentRound > state.currentChanosRound) {
+    return "chanos";
+  }
+  // All rounds done?
+  const allAdvisorsDone = state.currentRound >= numRounds;
+  const allChanosDone = state.currentChanosRound >= chanosRoundsNeeded;
+  if (allAdvisorsDone && allChanosDone) {
+    return "tony_close";
+  }
+  // Fallback
+  return "tony_close";
+}
+
+// ── STAGE 1: Tony Intake ──────────────────────────────────────────────────────
+
+export async function runTonyIntake(input: {
+  userPrompt: string;
+  context: string;
+  history: Pick<Message, "role" | "speaker" | "content">[];
+  mode: ModeContext;
+  clientApiKey?: string;
+  tonyOnly?: boolean;
+  activeAdvisor?: AdvisorName;
+}): Promise<{ turns: BoardroomTurn[]; sessionState: SessionState | null; nextStage: StageResult["nextStage"] | "done" | "clarify" | "one_to_one" }> {
+
+  // 1:1 advisor session — run and finish immediately
+  if (input.activeAdvisor) {
+    const result = await runAdvisorOneToOne(input.activeAdvisor, input);
+    return { turns: result.turns, sessionState: null, nextStage: "done" };
+  }
+
+  const baseHistory = historyMessages(input.history);
+
+  // Tony-only — one pass and done
+  if (input.tonyOnly) {
+    const raw = await llm([
+      {
+        role: "system",
+        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket("Tony", "tony_only", input.mode)}\n${formatAdvisorVoiceContract("Tony", "tony_only")}\n${input.context}\n\nHandle this directly. Short, direct, no essay.`
+      },
+      ...baseHistory,
+      { role: "user", content: input.userPrompt }
+    ], input.clientApiKey);
+
+    return {
+      turns: [{ speaker: "Tony", stage: "tony_only", content: raw }],
+      sessionState: null,
+      nextStage: "done"
+    };
+  }
+
+  const fallback = {
+    speaker: "Tony" as const,
+    path: "route" as const,
+    message: "David, I have the signal. Let me bring the right people in.",
+    selectedAdvisors: [input.mode.laneAdvisor] as AdvisorName[],
+    advisorQuestions: {} as Record<string, string>,
+    includeAndrej: false,
+    tension: "What's the real constraint?",
+  };
+
+  const intake = await structured<{
+    speaker: "Tony";
+    path: "clarify" | "route";
+    message: string;
+    selectedAdvisors: AdvisorName[];
+    advisorQuestions: Record<string, string>;
+    includeAndrej: boolean;
+    tension: string;
+  }>([
+    {
+      role: "system",
+      content: `${BOARDROOM_GUARDRAILS}
+
+${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
+${formatAdvisorVoiceContract("Tony", "intake")}
+
+${input.context}
+
+You are reading the CEO's message. Give your honest read of what's really going on.
+
+Choose path:
+- "clarify": you need one more piece of info before routing. Ask ONE specific question.
+- "route": you have enough. Tell the CEO what you're seeing and name exactly who you're calling in and the specific question you're putting to each person.
+
+Advisor selection rules:
+- Andrej ONLY for genuine technical/AI/code questions. Leave him out otherwise.
+- Chanos is ALWAYS called separately — do NOT include him in selectedAdvisors.
+- "full table" or "everyone" = include Russell, Allen, Andrej, Calvina.
+
+Return JSON only:
+{
+  "speaker": "Tony",
+  "path": "clarify|route",
+  "message": "Tony's message — his read and what he needs or who he's calling",
+  "selectedAdvisors": ["Russell", "Allen"],
+  "advisorQuestions": { "Russell": "specific question", "Allen": "specific question" },
+  "includeAndrej": false,
+  "tension": "one sentence naming the core tension"
+}`
+    },
+    ...baseHistory,
+    { role: "user", content: input.userPrompt }
+  ], input.clientApiKey, fallback);
+
+  const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: intake.message }];
+
+  if (intake.path === "clarify") {
+    return { turns, sessionState: null, nextStage: "clarify" };
+  }
+
+  const selectedAdvisors: AdvisorName[] = (intake.selectedAdvisors ?? [])
+    .map(canonicalAdvisor)
+    .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
+
+  if (!selectedAdvisors.length) {
+    return { turns, sessionState: null, nextStage: "done" };
+  }
+
+  const sessionState: SessionState = {
+    userPrompt: input.userPrompt,
+    tonyIntakeMessage: intake.message,
+    selectedAdvisors,
+    advisorQuestions: intake.advisorQuestions ?? {},
+    tension: intake.tension || "",
+    allTurns: turns,
+    currentRound: 0,
+    currentChanosRound: 0,
+  };
+
+  return {
+    turns,
+    sessionState,
+    nextStage: nextStageFor(sessionState, input.mode),
+  };
+}
+
+// ── STAGE 2: Advisor Group Round ──────────────────────────────────────────────
+
+export async function runAdvisorRound(input: {
+  context: string;
+  history: Pick<Message, "role" | "speaker" | "content">[];
+  mode: ModeContext;
+  clientApiKey?: string;
+  sessionState: SessionState;
+}): Promise<StageResult> {
+  const { sessionState, mode } = input;
+  const round = sessionState.currentRound + 1;
+  const roundLabel = round === 1 ? "first" : round === 2 ? "second" : "third";
+  const advisors = sessionState.selectedAdvisors;
+  const baseHistory = historyMessages(input.history);
+
+  const fallback = { turns: advisors.map(a => ({ speaker: a, message: fallbackAdvisorTurn(a) })) };
+
+  const payload = await structured<{ turns: { speaker: string; message: string }[] }>(
+    [{
+      role: "system",
+      content: `${BOARDROOM_GUARDRAILS}
+
+ACTIVE ADVISORS: ${advisors.join(", ")}
+
+${advisors.map(a => `${formatAdvisorVoicePacket(a, `round_${round}`, mode)}\n${formatAdvisorVoiceContract(a, `round_${round}`)}`).join("\n\n---\n\n")}
+
+${input.context}
+
+USER'S QUESTION: ${sessionState.userPrompt}
+
+TONY'S READ: ${sessionState.tonyIntakeMessage}
+
+${sessionState.allTurns.length > 1 ? `PREVIOUS DISCUSSION:\n${turnsToContext(sessionState.allTurns.slice(1))}` : ""}
+
+TONY'S QUESTIONS FOR THIS ${roundLabel.toUpperCase()} ROUND:
+${advisors.map(a => `${a}: ${sessionState.advisorQuestions[a] || "Give your full perspective from your lane."}`).join("\n")}
+
+ROUND ${round} CONTRACT:
+- Each advisor responds at FULL intensity. No hedging.
+- Round 2+ advisors MUST directly respond to previous turns and Chanos's critique by name.
+- Agree only if you genuinely agree and say exactly why. Challenge everything else.
+- NO --- dividers. NO ## headers. This is Slack, not a report.
+- Each turn: 150-300 words max. Voice over volume.
+
+Return JSON only:
+{ "turns": [${advisors.map(a => `{"speaker":"${a}","message":"..."}`).join(",")}] }`
+    },
+    ...baseHistory,
+    { role: "user", content: sessionState.userPrompt }
+  ], input.clientApiKey, fallback);
+
+  const turns: BoardroomTurn[] = [];
+  for (const t of (payload.turns ?? [])) {
+    const advisor = canonicalAdvisor(t.speaker);
+    if (advisor === "Tony" || advisor === "Chanos") continue;
+    turns.push({ speaker: advisor, stage: `advisor_round_${round}`, content: String(t.message || fallbackAdvisorTurn(advisor)) });
+  }
+
+  const newState: SessionState = {
+    ...sessionState,
+    allTurns: [...sessionState.allTurns, ...turns],
+    currentRound: round,
+  };
+
+  return {
+    turns,
+    cards: [],
+    tension: sessionState.tension,
+    nextStage: nextStageFor(newState, mode),
+    sessionState: newState,
+  };
+}
+
+// ── STAGE 3: Chanos Solo ──────────────────────────────────────────────────────
+
+export async function runChanosRound(input: {
+  context: string;
+  history: Pick<Message, "role" | "speaker" | "content">[];
+  mode: ModeContext;
+  clientApiKey?: string;
+  sessionState: SessionState;
+}): Promise<StageResult> {
+  const { sessionState, mode } = input;
+  const round = sessionState.currentChanosRound + 1;
+  const baseHistory = historyMessages(input.history);
+
+  const raw = await llm([{
+    role: "system",
+    content: `${BOARDROOM_GUARDRAILS}
+
+${formatAdvisorVoicePacket("Chanos", `chanos_round_${round}`, mode)}
+${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`)}
+
+${input.context}
+
+USER'S QUESTION: ${sessionState.userPrompt}
+
+TONY'S READ: ${sessionState.tonyIntakeMessage}
+
+DISCUSSION SO FAR:
+${turnsToContext(sessionState.allTurns.slice(1))}
+
+You are Chanos. Round ${round} critique. Short the plan.
+
+Structure: name the promotional narrative → find the fatal assumption → audit the math or execution → name the ONE red flag Tony must resolve.
+
+NO --- dividers. NO ## headers. 150-300 words. Speak like a villain, not an essayist.`
+  },
+  ...baseHistory,
+  { role: "user", content: sessionState.userPrompt }
+  ], input.clientApiKey);
+
+  const turn: BoardroomTurn = { speaker: "Chanos", stage: `chanos_round_${round}`, content: raw };
+
+  const newState: SessionState = {
+    ...sessionState,
+    allTurns: [...sessionState.allTurns, turn],
+    currentChanosRound: round,
+  };
+
+  return {
+    turns: [turn],
+    cards: [],
+    tension: sessionState.tension,
+    nextStage: nextStageFor(newState, mode),
+    sessionState: newState,
+  };
+}
+
+// ── STAGE 4: Tony Close ───────────────────────────────────────────────────────
+
+export async function runTonyClose(input: {
+  context: string;
+  history: Pick<Message, "role" | "speaker" | "content">[];
+  mode: ModeContext;
+  clientApiKey?: string;
+  sessionState: SessionState;
+}): Promise<StageResult> {
+  const { sessionState, mode } = input;
+  const baseHistory = historyMessages(input.history);
+
+  const fallbackDecision = "Take the smallest action that tests the real constraint.";
+
+  const close = await structured<{
+    speaker: "Tony";
+    decision: string;
+    decisionBrief: Record<string, string>;
+    message: string;
+    actionCards: GeneratedCard[];
+  }>([{
+    role: "system",
+    content: `${BOARDROOM_GUARDRAILS}
+
+${formatAdvisorVoicePacket("Tony", "close", mode)}
+${formatAdvisorVoiceContract("Tony", "close")}
+
+${input.context}
+
+USER'S QUESTION: ${sessionState.userPrompt}
+
+FULL DISCUSSION:
+${turnsToContext(sessionState.allTurns)}
+
+CORE TENSION: ${sessionState.tension}
+
+Close the session. Make the call.
+
+CONTRACT:
+- Reconcile the strongest argument AND Chanos's red flag. Both must visibly shape the decision.
+- Name the tension explicitly.
+- Write like a COO who just sat in a hard room — not a consultant summarizing.
+- Suggest 0-${mode.cardLimit} Advisor Work Cards. Specific, actionable, one task each.
+- NO --- dividers. NO ## headers. Use **bold** for key phrases inline.
+
+Return JSON only:
+{
+  "speaker": "Tony",
+  "decision": "one clear specific decision",
+  "decisionBrief": {
+    "whyThisCall": "why, naming the tension and how it was resolved",
+    "notDoing": "what we're explicitly not doing",
+    "nextPhysicalAction": "one thing in the next 20 minutes",
+    "artifactToCreate": "specific document to create",
+    "checkpoint": "how you'll know it worked"
+  },
+  "message": "**DECISION**\\n[decision]\\n\\n**WHY THIS IS THE CALL**\\n[why]\\n\\n**WHAT WE ARE NOT DOING**\\n[not doing]\\n\\n**NEXT PHYSICAL ACTION**\\n[action]\\n\\n**ARTIFACT TO CREATE**\\n[artifact]\\n\\n**CHECKPOINT**\\n[checkpoint]",
+  "actionCards": [{"title":"...","advisor":"Russell","workType":"draft","context":"...","desiredOutput":"..."}]
+}`
+  },
+  ...baseHistory,
+  { role: "user", content: sessionState.userPrompt }
+  ], input.clientApiKey, {
+    speaker: "Tony" as const,
+    decision: fallbackDecision,
+    decisionBrief: {
+      whyThisCall: `The room surfaced: ${turnsToContext(sessionState.allTurns.slice(1)).slice(0, 400)}`,
+      notDoing: "Adding complexity before validating the core assumption.",
+      nextPhysicalAction: "Open a document and draft the artifact the room pointed toward.",
+      artifactToCreate: "Session follow-up artifact",
+      checkpoint: "The move worked if it produces a real artifact or a named constraint."
+    },
+    message: "",
+    actionCards: [],
+  });
+
+  const turn: BoardroomTurn = {
+    speaker: "Tony",
+    stage: "tony_close",
+    content: close.message || formatClose(close),
+  };
+
+  return {
+    turns: [turn],
+    cards: normalizeCards(close.actionCards ?? [], mode, close.decision),
+    tension: sessionState.tension,
+    nextStage: "done",
+    sessionState: { ...sessionState, allTurns: [...sessionState.allTurns, turn] },
+  };
+}
+
+// ── 1:1 Advisor Session ───────────────────────────────────────────────────────
+
+async function runAdvisorOneToOne(
+  advisor: AdvisorName,
+  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content">[]; mode: ModeContext; clientApiKey?: string; }
+) {
+  const raw = await llm([
+    {
+      role: "system",
+      content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(advisor, "one_to_one", input.mode)}\n${formatAdvisorVoiceContract(advisor, "one_to_one")}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
+    },
+    ...historyMessages(input.history),
+    { role: "user", content: input.userPrompt }
+  ], input.clientApiKey);
+
+  return {
+    turns: [{ speaker: advisor, stage: "advisor_one_to_one", content: raw }],
+    cards: [] as GeneratedCard[],
+    tension: "",
+  };
+}
+
+// ── Legacy wrapper (used by 1:1 sessions via old route) ───────────────────────
 
 export async function runBoardroomEngine(input: {
   userPrompt: string;
@@ -73,347 +482,18 @@ export async function runBoardroomEngine(input: {
   activeAdvisor?: AdvisorName;
   tonyOnly?: boolean;
 }) {
-  // 1:1 advisor session
   if (input.activeAdvisor) {
-    return runAdvisorOneToOne(input.activeAdvisor, input);
-  }
-
-  const baseHistory = historyMessages(input.history);
-  const ctx = input.context;
-  const key = input.clientApiKey;
-  const mode = input.mode;
-
-  // ── STEP 1: TONY CLARIFICATION ────────────────────────────────────────────
-  // Tony reads the message, gives his initial take, asks what he needs to know.
-  // Returns path: "clarify" (needs more info) or "route" (ready to call the room)
-
-  const clarifyFallback = {
-    speaker: "Tony" as const,
-    path: "route" as const,
-    message: "David, I have the signal. Let me bring in the right people.",
-    selectedAdvisors: [mode.laneAdvisor] as AdvisorName[],
-    advisorQuestions: {} as Record<string, string>,
-    includeAndrej: false,
-    tension: "What's the real constraint here?",
-  };
-
-  const tonyRead = await structured<{
-    speaker: "Tony";
-    path: "clarify" | "route";
-    message: string;
-    selectedAdvisors: AdvisorName[];
-    advisorQuestions: Record<string, string>;
-    includeAndrej: boolean;
-    tension: string;
-  }>(
-    [
+    const raw = await llm([
       {
         role: "system",
-        content: `${BOARDROOM_GUARDRAILS}
-
-${formatAdvisorVoicePacket("Tony", "clarification", mode)}
-${formatAdvisorVoiceContract("Tony", "clarification")}
-
-${ctx}
-
-You are reading the CEO's message for the first time. Give your immediate, honest read of what's really going on. Then decide:
-
-- If you need more clarity before calling the room: path = "clarify". Ask ONE specific question that gets you what you need. Make your read compelling enough that the CEO WANTS to answer.
-- If you have enough to route: path = "route". Tell the CEO what you're seeing and explain exactly who you're calling in and WHY — what specific question you're putting to each advisor.
-
-When selecting advisors:
-- You decide who is needed. Not everyone is needed every time.
-- Andrej ONLY if there is a genuine technical/AI/code/systems question. If unclear, leave him out.
-- Chanos is ALWAYS called separately — do not include him in selectedAdvisors.
-- For "call everyone" or "full table" requests: include all of Russell, Allen, Andrej, Calvina.
-- For life/personal questions: lean toward Calvina and Allen. For business/marketing: Russell and Allen. For risk: Chanos will come separately.
-
-Return JSON only:
-{
-  "speaker": "Tony",
-  "path": "clarify|route",
-  "message": "Tony's full visible message — his read + clarifying question OR his read + who he's calling and why",
-  "selectedAdvisors": ["Russell", "Allen"],
-  "advisorQuestions": {
-    "Russell": "specific question Tony is putting to Russell",
-    "Allen": "specific question Tony is putting to Allen"
-  },
-  "includeAndrej": false,
-  "tension": "one sentence naming the core tension or unknown"
-}`
-      },
-      ...baseHistory,
-      { role: "user", content: input.userPrompt }
-    ],
-    key,
-    clarifyFallback
-  );
-
-  const turns: BoardroomTurn[] = [];
-  turns.push({ speaker: "Tony", stage: "tony_intake", content: tonyRead.message });
-
-  // If Tony needs clarification, stop here and wait for the next user message
-  if (tonyRead.path === "clarify") {
-    return { turns, cards: [] as GeneratedCard[], tension: tonyRead.tension };
-  }
-
-  // Normalize selected advisors — Chanos is always separate, never in the group
-  const selectedAdvisors: AdvisorName[] = (tonyRead.selectedAdvisors ?? [])
-    .map(canonicalAdvisor)
-    .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
-
-  // Tony-only or very simple questions — skip the room
-  if (input.tonyOnly || selectedAdvisors.length === 0) {
-    return { turns, cards: [] as GeneratedCard[], tension: "" };
-  }
-
-  const tension = tonyRead.tension || "What's the real constraint?";
-  const advisorQuestions = tonyRead.advisorQuestions ?? {};
-  let roundHistory: BoardroomTurn[] = [];
-
-  // ── DEBATE ROUNDS ─────────────────────────────────────────────────────────
-  // Quick: 1 round. Normal: 2 rounds. Deep: 3 rounds.
-  const numRounds = mode.depth === "quick" ? 1 : mode.depth === "normal" ? 2 : 3;
-  // Chanos runs separately after each round (except no 3rd Chanos in deep)
-  const chanosRounds = mode.depth === "quick" ? 1 : 2;
-
-  for (let round = 1; round <= numRounds; round++) {
-    // ── GROUP ADVISOR ROUND ──────────────────────────────────────────────────
-    const roundLabel = round === 1 ? "first" : round === 2 ? "second" : "third";
-
-    const groupPayload = await structured<{
-      turns: { speaker: string; message: string }[];
-    }>(
-      [
-        {
-          role: "system",
-          content: `${BOARDROOM_GUARDRAILS}
-
-You are facilitating the ${roundLabel} round of advisor discussion in the Boardroom.
-
-ACTIVE ADVISORS THIS ROUND: ${selectedAdvisors.join(", ")}
-
-${selectedAdvisors.map(a => `${formatAdvisorVoicePacket(a, `round_${round}`, mode)}\n${formatAdvisorVoiceContract(a, `round_${round}`)}`).join("\n\n---\n\n")}
-
-${ctx}
-
-ORIGINAL QUESTION: ${input.userPrompt}
-
-TONY'S READ: ${tonyRead.message}
-
-${round > 1 ? `PREVIOUS DISCUSSION:\n${turnsToContext(roundHistory)}` : ""}
-
-TONY'S SPECIFIC QUESTIONS FOR THIS ROUND:
-${selectedAdvisors.map(a => `${a}: ${advisorQuestions[a] || "Give your full perspective from your lane."}`).join("\n")}
-
-CONTRACT FOR THIS ROUND:
-- Each advisor responds in character at full intensity — no softening, no hedging
-- Advisors in round 2+ must directly respond to what was said in round 1, including Chanos's critique
-- Advisors can agree with each other's round 1 points if they genuinely agree — but they must say why
-- Advisors should challenge, refine, or build on each other's positions
-- Order matters: each advisor has heard the previous advisor's response in this same call
-- Respond only as the named advisors. Tony and Chanos do not speak here.
-
-Return JSON only:
-{
-  "turns": [
-    ${selectedAdvisors.map(a => `{"speaker": "${a}", "message": "${a}'s full response"}`).join(",\n    ")}
-  ]
-}`
-        },
-        ...baseHistory,
-        { role: "user", content: input.userPrompt }
-      ],
-      key,
-      { turns: selectedAdvisors.map(a => ({ speaker: a, message: `[${a} — round ${round} response]` })) }
-    );
-
-    for (const t of (groupPayload.turns ?? [])) {
-      const advisor = canonicalAdvisor(t.speaker);
-      if (advisor === "Tony" || advisor === "Chanos") continue;
-      const turn: BoardroomTurn = {
-        speaker: advisor,
-        stage: `advisor_round_${round}`,
-        content: String(t.message || `[${advisor} — no response]`),
-      };
-      roundHistory.push(turn);
-      turns.push(turn);
-    }
-
-    // ── CHANOS ROUND ──────────────────────────────────────────────────────────
-    // Chanos always runs separately after each round (up to chanosRounds)
-    if (round <= chanosRounds) {
-      const chanosRaw = await llm(
-        [
-          {
-            role: "system",
-            content: `${BOARDROOM_GUARDRAILS}
-
-${formatAdvisorVoicePacket("Chanos", `chanos_round_${round}`, mode)}
-${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`)}
-
-${ctx}
-
-ORIGINAL QUESTION: ${input.userPrompt}
-
-TONY'S READ: ${tonyRead.message}
-
-ADVISOR DISCUSSION SO FAR:
-${turnsToContext(roundHistory)}
-
-You are Chanos. This is your round ${round} critique. You have heard what the advisors just said. Now you short it.
-
-Build your short thesis:
-1. Name the promotional narrative or optimistic assumption in the advisor discussion
-2. Find the fatal assumption — what has to be true for their plan to work that nobody has verified
-3. Audit the unit economics or execution reality
-4. Name the ONE red flag Tony must resolve before making the final call
-
-Be specific. Be hostile to the plan. Be precise. End with your red flag.`
-          },
-          ...baseHistory,
-          { role: "user", content: input.userPrompt }
-        ],
-        key
-      );
-
-      const chanosTurn: BoardroomTurn = {
-        speaker: "Chanos",
-        stage: `chanos_round_${round}`,
-        content: chanosRaw,
-      };
-      roundHistory.push(chanosTurn);
-      turns.push(chanosTurn);
-    }
-  }
-
-  // ── TONY CLOSE ────────────────────────────────────────────────────────────
-  const closeResult = await structured<{
-    speaker: "Tony";
-    decision: string;
-    decisionBrief: Record<string, string>;
-    message: string;
-    actionCards: GeneratedCard[];
-  }>(
-    [
-      {
-        role: "system",
-        content: `${BOARDROOM_GUARDRAILS}
-
-${formatAdvisorVoicePacket("Tony", "close", mode)}
-${formatAdvisorVoiceContract("Tony", "close")}
-
-${ctx}
-
-ORIGINAL QUESTION: ${input.userPrompt}
-
-FULL BOARDROOM DISCUSSION:
-${turnsToContext(roundHistory)}
-
-CORE TENSION IDENTIFIED: ${tension}
-
-You are Tony closing this session. You have heard everything. Now you make the call.
-
-CONTRACT FOR YOUR CLOSE:
-- Acknowledge the strongest argument from the advisors AND Chanos's red flag. Both must influence your decision.
-- Do not dismiss Chanos. His critique must change, constrain, or sharpen the call in some visible way.
-- Name the tension explicitly. The best closes have a real "and here's what made it hard" moment.
-- The Decision Brief should feel like a COO who sat in a hard room and made a real call, not a consultant summarizing a meeting.
-- Suggest 0-${mode.cardLimit} Advisor Work Cards. Cards are specific, actionable work portals — one task, one advisor, one clear output. Not vague. Not generic.
-- Do not claim anything was sent, published, purchased, or already done.
-
-Return JSON only:
-{
-  "speaker": "Tony",
-  "decision": "one clear, specific decision",
-  "decisionBrief": {
-    "whyThisCall": "the argument that won, and how Chanos's red flag shaped or constrained it",
-    "notDoing": "the specific tempting paths we are explicitly not taking and why",
-    "nextPhysicalAction": "one thing the CEO can do in the next 20 minutes",
-    "artifactToCreate": "the specific document, draft, script, or output to create",
-    "checkpoint": "how the CEO will know this move worked"
-  },
-  "message": "**DECISION**\\n[decision]\\n\\n**WHY THIS IS THE CALL**\\n[why]\\n\\n**WHAT WE ARE NOT DOING**\\n[not doing]\\n\\n**NEXT PHYSICAL ACTION**\\n[action]\\n\\n**ARTIFACT TO CREATE**\\n[artifact]\\n\\n**CHECKPOINT**\\n[checkpoint]",
-  "actionCards": [
-    {
-      "title": "specific, concrete work card title",
-      "advisor": "Russell",
-      "workType": "draft",
-      "context": "what decision this came from and why it matters now",
-      "desiredOutput": "exactly what the CEO and advisor should produce together"
-    }
-  ]
-}`
-      },
-      ...baseHistory,
-      { role: "user", content: input.userPrompt }
-    ],
-    key,
-    {
-      speaker: "Tony" as const,
-      decision: "Take the smallest action that tests the real constraint.",
-      decisionBrief: {
-        whyThisCall: `The room surfaced: ${turnsToContext(roundHistory).slice(0, 500)}`,
-        notDoing: "Adding complexity before validating the core assumption.",
-        nextPhysicalAction: "Open a blank document and draft the artifact the room pointed toward.",
-        artifactToCreate: "Boardroom session follow-up artifact",
-        checkpoint: "The move worked if it produces a real artifact, a real reply, or a named constraint."
-      },
-      message: "",
-      actionCards: [],
-    }
-  );
-
-  const closeTurn: BoardroomTurn = {
-    speaker: "Tony",
-    stage: "tony_close",
-    content: closeResult.message || formatClose(closeResult),
-  };
-  turns.push(closeTurn);
-
-  return {
-    turns,
-    cards: normalizeCards(closeResult.actionCards ?? [], mode, closeResult.decision),
-    tension,
-  };
-}
-
-// ── 1:1 Advisor Session ───────────────────────────────────────────────────────
-
-async function runAdvisorOneToOne(
-  advisor: AdvisorName,
-  input: {
-    userPrompt: string;
-    context: string;
-    history: Pick<Message, "role" | "speaker" | "content">[];
-    mode: ModeContext;
-    clientApiKey?: string;
-  }
-) {
-  const raw = await llm(
-    [
-      {
-        role: "system",
-        content: `${BOARDROOM_GUARDRAILS}
-
-${formatAdvisorVoicePacket(advisor, "one_to_one", input.mode)}
-${formatAdvisorVoiceContract(advisor, "one_to_one")}
-
-${input.context}
-
-You are in a 1:1 work session with the CEO. This is implementation mode — help them create the actual artifact, draft, plan, or output. Do not just advise. Build with them. Do not claim to send, publish, delete, cancel, or buy anything.`
+        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(input.activeAdvisor, "one_to_one", input.mode)}\n${formatAdvisorVoiceContract(input.activeAdvisor, "one_to_one")}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
       },
       ...historyMessages(input.history),
       { role: "user", content: input.userPrompt }
-    ],
-    input.clientApiKey
-  );
-
-  return {
-    turns: [{ speaker: advisor, stage: "advisor_one_to_one", content: raw }],
-    cards: [] as GeneratedCard[],
-    tension: "",
-  };
+    ], input.clientApiKey);
+    return { turns: [{ speaker: input.activeAdvisor, stage: "advisor_one_to_one", content: raw }], cards: [] as GeneratedCard[], tension: "" };
+  }
+  return { turns: [] as BoardroomTurn[], cards: [] as GeneratedCard[], tension: "" };
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────────
@@ -427,4 +507,16 @@ function formatClose(close: { decision: string; decisionBrief: Record<string, st
     "**ARTIFACT TO CREATE**", close.decisionBrief.artifactToCreate, "",
     "**CHECKPOINT**", close.decisionBrief.checkpoint,
   ].join("\n");
+}
+
+function fallbackAdvisorTurn(advisor: AdvisorName): string {
+  const fallbacks: Record<AdvisorName, string> = {
+    Tony: "David, turn this signal into one concrete decision, one next action, one artifact.",
+    Russell: "The commercial path needs to be concrete: one audience, one hook, one offer, one conversion event. If we can't name all four, it's still theater. 🎣",
+    Allen: "What does done look like? Strip it until the first move takes 20 minutes or less. ✅",
+    Chanos: "The plan fails if distribution, proof, cash conversion, or delivery capacity is assumed instead of verified. Kill the fantasy math. 🩸",
+    Andrej: "Build only where tooling changes throughput. If the bottleneck is trust or offer clarity, no app fixes that. 🤖",
+    Calvina: "Listen to the language underneath the strategy. If the sentence installs panic, the action will wobble. Shift the internal frame first. 💋",
+  };
+  return fallbacks[advisor];
 }
