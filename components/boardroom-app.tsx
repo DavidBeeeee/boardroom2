@@ -35,7 +35,7 @@ const ADVISOR_META: Record<string, { role: string; dot: string }> = {
   Allen:   { role: "Systems / GTD",    dot: "bg-slate-400" },
   Chanos:  { role: "Short-Seller",     dot: "bg-yellow-400" },
   Andrej:  { role: "CTO / AI",         dot: "bg-purple-400" },
-  Calvina: { role: "NLP / WILD Coach", dot: "bg-teal-400" },
+  Calvina: { role: "NLP / WILD Coach", dot: "bg-pink-400" },
 };
 
 function stageColor(stage: string): string {
@@ -128,8 +128,20 @@ export function BoardroomApp() {
     if (sessionToken && workspaceId) void loadWorkspace(workspaceId);
   }, [sessionToken, workspaceId]);
 
+  function isNearBottom() {
+    const el = scrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }
+
+  function scrollToBottom() {
+    if (isNearBottom()) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    }
+  }
+
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    scrollToBottom();
   }, [messages, typingAdvisor]);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
@@ -217,7 +229,7 @@ export function BoardroomApp() {
         flushSync(() => {
           setTypingAdvisor(msg.speaker);
         });
-        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+        scrollToBottom();
         const delay = Math.min(600 + msg.content.length * 0.8, 2200);
         await pause(delay);
         flushSync(() => setTypingAdvisor(null));
@@ -228,30 +240,75 @@ export function BoardroomApp() {
     }
   }
 
+  // Refresh workspace bundle (cards, docs, conversations list) WITHOUT resetting
+  // messages, channel, or conversationId — used after sending a message
+  async function refreshBundle(wid: string) {
+    try {
+      const payload = await api(`/api/workspaces/${wid}`);
+      setBundle(payload);
+    } catch {
+      // silent — bundle refresh is non-critical
+    }
+  }
+
   async function sendMessage(overrideText?: string, overrideTonyOnly?: boolean) {
     const text = (overrideText ?? composer).trim();
     if (!text || !workspaceId) return;
-    setBusy(true);
+
+    const sendChannel = channel; // capture channel at send time
+
+    // Show Tony typing IMMEDIATELY before the API call
+    flushSync(() => {
+      setBusy(true);
+      setTypingAdvisor("Tony");
+    });
     setComposer("");
+
     try {
       const payload = await api(`/api/workspaces/${workspaceId}/chat`, {
         method: "POST",
         body: JSON.stringify({
           text,
-          conversationId: bundle?.conversations.find((c) => c.id === conversationId)?.channel === channel ? conversationId : "",
-          channel,
+          conversationId,
+          channel: sendChannel,
           mode,
           clientApiKey: clientKey || undefined,
           cardId: activeCardId || undefined,
-          tonyOnly: (overrideTonyOnly ?? tonyOnly) && channel === "brainstorming",
+          tonyOnly: (overrideTonyOnly ?? tonyOnly) && sendChannel === "brainstorming",
         })
       });
-      if (payload.conversationId && payload.conversationId !== conversationId) setConversationId(payload.conversationId);
-      setMessages(current => [...current, payload.userMessage].filter(Boolean));
+
+      // Update conversationId if new conversation was created
+      if (payload.conversationId && payload.conversationId !== conversationId) {
+        setConversationId(payload.conversationId);
+      }
+
+      // Clear the Tony pre-typing indicator, add user message
+      flushSync(() => setTypingAdvisor(null));
+      flushSync(() => setMessages(current => [...current, payload.userMessage].filter(Boolean)));
+
+      // Animate advisor messages with proper typing indicators
       await displayMessagesWithTyping(payload.messages || []);
-      await loadWorkspace(workspaceId);
+
+      // Refresh bundle (cards, docs) WITHOUT resetting messages or channel
+      await refreshBundle(workspaceId);
+
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "Boardroom error.");
+      flushSync(() => setTypingAdvisor(null));
+      const msg = error instanceof Error ? error.message : "Boardroom error.";
+      showToast(`❌ ${msg}`);
+      // Show error inline in chat too so it's unmissable
+      flushSync(() => setMessages(current => [...current, {
+        id: `err-${Date.now()}`,
+        workspace_id: workspaceId,
+        conversation_id: conversationId,
+        role: "system" as const,
+        speaker: "System",
+        content: `⚠️ ${msg}`,
+        stage: "error",
+        metadata: {},
+        created_at: new Date().toISOString(),
+      }]));
     } finally {
       setBusy(false);
     }
@@ -462,13 +519,15 @@ export function BoardroomApp() {
               </button>
             )}
             {channel === "brainstorming" && (
-              <button
-                onClick={() => setTonyOnly(v => !v)}
-                className={`border px-3 py-1.5 text-xs font-bold transition-colors ${tonyOnly ? "border-teal bg-teal text-white" : "border-stone-300 text-stone-500 hover:border-teal hover:text-teal"}`}
-                title="Tony handles this alone — no advisor routing"
-              >
-                Tony Only
-              </button>
+              <label className="flex cursor-pointer items-center gap-2" title="Tony handles this alone — no advisor routing">
+                <span className="text-xs text-stone-500">Tony Only</span>
+                <div
+                  onClick={() => setTonyOnly(v => !v)}
+                  className={`relative h-5 w-9 rounded-full transition-colors duration-200 ${tonyOnly ? "bg-teal" : "bg-stone-300"}`}
+                >
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${tonyOnly ? "translate-x-4" : "translate-x-0.5"}`} />
+                </div>
+              </label>
             )}
           </div>
         </header>
@@ -508,6 +567,10 @@ export function BoardroomApp() {
                         >
                           <ClipboardCopy size={12} />
                         </button>
+                      </div>
+                    ) : message.role === "system" ? (
+                      <div className="max-w-4xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                        {message.content}
                       </div>
                     ) : (
                       <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageColor(message.stage)}`}>
