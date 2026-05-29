@@ -47,6 +47,7 @@ export function BoardroomApp() {
   const [mode, setMode] = useState<Pick<ModeContext, "depth" | "lane">>({ depth: "normal", lane: "business" });
   const [clientKey, setClientKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [typingAdvisor, setTypingAdvisor] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [activeCardId, setActiveCardId] = useState("");
   const [tab, setTab] = useState<"chat" | "docs" | "settings">("chat");
@@ -166,7 +167,8 @@ export function BoardroomApp() {
         })
       });
       if (payload.conversationId && payload.conversationId !== conversationId) setConversationId(payload.conversationId);
-      setMessages((current) => [...current, payload.userMessage, ...(payload.messages || [])].filter(Boolean));
+      setMessages(current => [...current, payload.userMessage].filter(Boolean));
+      await displayMessagesWithTyping(payload.messages || []);
       await loadWorkspace(workspaceId);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Boardroom error.");
@@ -208,6 +210,23 @@ export function BoardroomApp() {
     setConversationId("");
     await loadWorkspace(workspaceId);
     setNotice("Fresh Start complete.");
+  }
+
+  function pause(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function displayMessagesWithTyping(newMessages: Message[]) {
+    for (const msg of newMessages) {
+      if (msg.role === "assistant") {
+        setTypingAdvisor(msg.speaker);
+        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+        // Typing delay scales loosely with message length, capped at 2.2s
+        const delay = Math.min(600 + msg.content.length * 0.8, 2200);
+        await pause(delay);
+        setTypingAdvisor(null);
+      }
+      setMessages(current => [...current, msg]);
+      await pause(80);
+    }
   }
 
   function saveClientKey(value: string) {
@@ -307,7 +326,7 @@ export function BoardroomApp() {
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
               <div ref={scrollRef} className="boardroom-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                {!messages.length ? (
+                {!messages.length && !typingAdvisor ? (
                   <div className="mx-auto mt-16 max-w-xl text-center">
                     <h3 className="font-serif text-3xl font-bold">Ask the room.</h3>
                     <p className="mt-2 text-stone-600">Upload business docs, ask a real question, get visible advisor turns, a Tony Decision Brief, and work cards.</p>
@@ -315,11 +334,36 @@ export function BoardroomApp() {
                 ) : messages.map((message) => (
                   <article key={message.id} className={`mb-4 max-w-4xl ${message.role === "user" ? "ml-auto" : ""}`}>
                     <div className={`border px-4 py-3 ${message.role === "user" ? "border-teal bg-teal text-white" : "border-stone-300 bg-white"}`}>
-                      <div className="mb-1 text-xs font-bold uppercase tracking-wide opacity-70">{message.speaker} {message.stage ? `- ${message.stage}` : ""}</div>
-                      <div className="markdown-ish whitespace-pre-wrap text-sm leading-6">{message.content}</div>
+                      <div className="mb-1 text-xs font-bold uppercase tracking-wide opacity-70">{message.speaker} {message.stage ? `— ${message.stage.replace(/_/g, " ")}` : ""}</div>
+                      {message.role === "user" ? (
+                        <div className="text-sm leading-6 whitespace-pre-wrap">{message.content}</div>
+                      ) : (
+                        <div className="prose prose-sm max-w-none text-sm leading-6
+                          prose-headings:font-bold prose-headings:text-stone-900
+                          prose-p:my-1 prose-p:leading-6
+                          prose-strong:font-bold prose-strong:text-stone-900
+                          prose-ul:my-1 prose-ul:pl-4 prose-li:my-0.5
+                          prose-ol:my-1 prose-ol:pl-4
+                          prose-blockquote:border-l-2 prose-blockquote:border-stone-300 prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-stone-600
+                          prose-code:bg-stone-100 prose-code:px-1 prose-code:rounded prose-code:text-xs">
+                          <ReactMarkdown>{message.content}</ReactMarkdown>
+                        </div>
+                      )}
                     </div>
                   </article>
                 ))}
+                {typingAdvisor && (
+                  <article className="mb-4 max-w-4xl">
+                    <div className="border border-stone-300 bg-white px-4 py-3">
+                      <div className="mb-2 text-xs font-bold uppercase tracking-wide opacity-70">{typingAdvisor}</div>
+                      <div className="flex items-center gap-1">
+                        <span className="h-2 w-2 animate-bounce rounded-full bg-stone-400 [animation-delay:0ms]" />
+                        <span className="h-2 w-2 animate-bounce rounded-full bg-stone-400 [animation-delay:150ms]" />
+                        <span className="h-2 w-2 animate-bounce rounded-full bg-stone-400 [animation-delay:300ms]" />
+                      </div>
+                    </div>
+                  </article>
+                )}
               </div>
               <div className="border-t border-stone-300 bg-white p-4">
                 <textarea className="h-24 w-full resize-none border border-stone-300 p-3" value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={channel === "brainstorming" ? "Ask the Boardroom..." : `Work with ${channel}...`} />
