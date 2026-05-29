@@ -246,7 +246,7 @@ Return JSON only:
 
 export async function runAdvisorRound(input: {
   context: string;
-  history: Pick<Message, "role" | "speaker" | "content">[];
+  history: Pick<Message, "role" | "speaker" | "content" | "stage">[];
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
@@ -319,7 +319,7 @@ Return JSON only:
 
 export async function runChanosRound(input: {
   context: string;
-  history: Pick<Message, "role" | "speaker" | "content">[];
+  history: Pick<Message, "role" | "speaker" | "content" | "stage">[];
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
@@ -375,7 +375,7 @@ NO --- dividers. NO ## headers. 150-300 words. Speak like a villain, not an essa
 
 export async function runTonyClose(input: {
   context: string;
-  history: Pick<Message, "role" | "speaker" | "content">[];
+  history: Pick<Message, "role" | "speaker" | "content" | "stage">[];
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
@@ -489,7 +489,7 @@ async function runAdvisorOneToOne(
 export async function runBoardroomEngine(input: {
   userPrompt: string;
   context: string;
-  history: Pick<Message, "role" | "speaker" | "content">[];
+  history: Pick<Message, "role" | "speaker" | "content" | "stage">[];
   mode: ModeContext;
   clientApiKey?: string;
   activeAdvisor?: AdvisorName;
