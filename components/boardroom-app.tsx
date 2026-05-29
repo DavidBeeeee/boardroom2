@@ -47,6 +47,7 @@ export function BoardroomApp() {
   const [mode, setMode] = useState<Pick<ModeContext, "depth" | "lane">>({ depth: "normal", lane: "business" });
   const [clientKey, setClientKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tonyOnly, setTonyOnly] = useState(false);
   const [typingAdvisor, setTypingAdvisor] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [activeCardId, setActiveCardId] = useState("");
@@ -163,7 +164,8 @@ export function BoardroomApp() {
           channel,
           mode,
           clientApiKey: clientKey || undefined,
-          cardId: activeCardId || undefined
+          cardId: activeCardId || undefined,
+          tonyOnly: tonyOnly && channel === "brainstorming"
         })
       });
       if (payload.conversationId && payload.conversationId !== conversationId) setConversationId(payload.conversationId);
@@ -307,6 +309,15 @@ export function BoardroomApp() {
             <p className="text-sm text-stone-600">{channel === "brainstorming" ? "Tony chairs the room and routes the right advisors." : `${channel} 1:1 advisor work session.`}</p>
           </div>
           <div className="flex items-center gap-2">
+            {channel === "brainstorming" && (
+              <button
+                onClick={() => setTonyOnly(v => !v)}
+                className={`border px-3 py-2 text-xs font-bold transition-colors ${tonyOnly ? "border-teal bg-teal text-white" : "border-stone-300 text-stone-600 hover:border-teal hover:text-teal"}`}
+                title="Tony handles this alone — no advisor routing"
+              >
+                Tony Only
+              </button>
+            )}
             <select className="border border-stone-300 px-2 py-2 text-sm" value={mode.depth} onChange={(e) => setMode({ ...mode, depth: e.target.value as ModeContext["depth"] })}>
               <option value="quick">Quick</option>
               <option value="normal">Normal</option>
@@ -352,6 +363,18 @@ export function BoardroomApp() {
                     </div>
                   </article>
                 ))}
+                {messages.length > 0 && messages[messages.length - 1]?.stage === "tony_close" && !busy && (
+                  <div className="mb-4 flex justify-center">
+                    <button
+                      onClick={() => {
+                        setComposer("Continue the discussion. Pick up the most important unresolved thread — push it further, stress-test the conclusion, or surface anything the team glossed over. Close with a refined action plan.");
+                      }}
+                      className="border border-stone-300 bg-white px-4 py-2 text-sm text-stone-600 hover:border-teal hover:text-teal transition-colors"
+                    >
+                      ↩ Continue Discussion
+                    </button>
+                  </div>
+                )}
                 {typingAdvisor && (
                   <article className="mb-4 max-w-4xl">
                     <div className="border border-stone-300 bg-white px-4 py-3">

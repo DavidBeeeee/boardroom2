@@ -83,7 +83,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       history: previousMessages.data as Message[] || [],
       mode,
       clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
-      activeAdvisor
+      activeAdvisor,
+      tonyOnly: body.tonyOnly === true
     });
 
     const messageRows = generated.turns.map((turn) => ({

@@ -34,6 +34,14 @@ function meaningfulDecision(text: string): boolean {
   return /\b(plan|strategy|decide|decision|should i|what should|make money|revenue|client|lead|offer|conversion|launch|sell|business|pricing|funnel|risk|architecture|technical|app|code|build|implement|life decision|urgent)\b/i.test(text);
 }
 
+function shouldRunTonyOnly(text: string): boolean {
+  // Short factual questions, greetings, or simple requests Tony can handle alone
+  if (text.length < 60) return true;
+  if (/^(hi|hello|hey|what is|what are|who is|how do|can you|tell me|remind me|what does|define|explain|summarize)/i.test(text.trim())) return true;
+  if (meaningfulDecision(text)) return false;
+  return false;
+}
+
 function normalizeAdvisorSelection(
   names: unknown,
   mode: ModeContext,
@@ -78,13 +86,107 @@ export async function runBoardroomEngine(input: {
   mode: ModeContext;
   clientApiKey?: string;
   activeAdvisor?: AdvisorName;
+  tonyOnly?: boolean;
 }) {
   if (input.activeAdvisor) {
     return runAdvisorOneToOne(input.activeAdvisor, input);
   }
 
-  const turns: BoardroomTurn[] = [];
   const baseHistory = historyMessages(input.history);
+
+  // Tony-only mode: skip the full room, Tony handles it alone
+  if (input.tonyOnly || shouldRunTonyOnly(input.userPrompt)) {
+    return runTonyOnlySession(input.userPrompt, input.context, baseHistory, input.mode, input.clientApiKey);
+  }
+
+  // Quick mode: single combined call instead of sequential API calls
+  if (input.mode.depth === "quick") {
+    return runQuickSession(input.userPrompt, input.context, baseHistory, input.mode, input.clientApiKey);
+  }
+
+  // Normal / Deep: full sequential pipeline
+  return runFullSession(input, baseHistory);
+}
+
+async function runTonyOnlySession(
+  userPrompt: string,
+  context: string,
+  baseHistory: ChatMessage[],
+  mode: ModeContext,
+  clientApiKey?: string
+) {
+  const raw = await callDeepSeek(
+    [
+      {
+        role: "system",
+        content: `You are Tony in David Bee's AI Boardroom, handling this one yourself.
+${formatAdvisorVoicePacket("Tony", "tony_only", mode)}
+${formatAdvisorVoiceContract("Tony", "tony_only")}
+${context}
+
+Give David a direct, useful answer. If this is a real decision, close with a one-line next action. Keep it tight.`,
+      },
+      ...baseHistory,
+      { role: "user", content: userPrompt },
+    ],
+    clientApiKey
+  );
+
+  return {
+    turns: [{ speaker: "Tony" as AdvisorName, stage: "tony_only", content: raw }],
+    cards: [] as GeneratedCard[],
+  };
+}
+
+async function runQuickSession(
+  userPrompt: string,
+  context: string,
+  baseHistory: ChatMessage[],
+  mode: ModeContext,
+  clientApiKey?: string
+) {
+  const laneAdvisor = mode.laneAdvisor;
+
+  const raw = await callDeepSeek(
+    [
+      {
+        role: "system",
+        content: `You are running a Quick Boardroom session for David Bee.
+${formatAdvisorVoicePacket("Tony", "quick", mode)}
+${context}
+
+Write a tight response in this exact format — no extra commentary:
+
+**Tony:** [2-3 sentence intake and routing]
+
+**${laneAdvisor}:** [sharp lane-specific insight, 2-4 sentences]
+
+**DECISION:** [one clear sentence]
+**NEXT ACTION:** [one physical action David can take in the next 20 minutes]`,
+      },
+      ...baseHistory,
+      { role: "user", content: userPrompt },
+    ],
+    clientApiKey
+  );
+
+  return {
+    turns: [{ speaker: "Tony" as AdvisorName, stage: "tony_close", content: raw }],
+    cards: [] as GeneratedCard[],
+  };
+}
+
+async function runFullSession(
+  input: {
+    userPrompt: string;
+    context: string;
+    history: Pick<Message, "role" | "speaker" | "content">[];
+    mode: ModeContext;
+    clientApiKey?: string;
+  },
+  baseHistory: ChatMessage[]
+) {
+  const turns: BoardroomTurn[] = [];
 
   const tonyIntakeFallback = {
     speaker: "Tony" as const,
