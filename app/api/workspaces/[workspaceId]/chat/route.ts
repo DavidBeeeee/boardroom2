@@ -81,7 +81,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     const result = await runTonyIntake({
       userPrompt: text,
       context: contextText,
-      history: previousMessages.data as Message[] || [],
+      history: (previousMessages.data || []) as Message[],
       mode,
       clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
       activeAdvisor,

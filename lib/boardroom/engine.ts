@@ -41,7 +41,7 @@ export function canonicalAdvisor(name: unknown): AdvisorName {
   return match ?? "Tony";
 }
 
-export function historyMessages(history: Pick<Message, "role" | "speaker" | "content">[]): ChatMessage[] {
+export function historyMessages(history: Pick<Message, "role" | "speaker" | "content" | "stage">[]): ChatMessage[] {
   return history.slice(-12).map(m => ({
     role: m.role === "user" ? "user" : "assistant",
     content: m.role === "user" ? m.content : `${m.speaker}: ${m.content}`,
@@ -107,10 +107,18 @@ function nextStageFor(state: SessionState, mode: ModeContext): StageResult["next
 
 // ── STAGE 1: Tony Intake ──────────────────────────────────────────────────────
 
+// Detect if the last assistant message was a tony_intake (clarification)
+// If so, this user message is a follow-up answer — don't treat as a new question
+function isFollowUpToClarification(history: Pick<Message, "role" | "speaker" | "content" | "stage">[]): boolean {
+  const assistantMessages = history.filter(h => h.role === "assistant");
+  const lastAssistant = assistantMessages.at(-1) as (typeof assistantMessages[0] & { stage?: string }) | undefined;
+  return lastAssistant?.stage === "tony_intake";
+}
+
 export async function runTonyIntake(input: {
   userPrompt: string;
   context: string;
-  history: Pick<Message, "role" | "speaker" | "content">[];
+  history: Pick<Message, "role" | "speaker" | "content" | "stage">[];
   mode: ModeContext;
   clientApiKey?: string;
   tonyOnly?: boolean;
@@ -124,9 +132,10 @@ export async function runTonyIntake(input: {
   }
 
   const baseHistory = historyMessages(input.history);
+  const isFollowUp = isFollowUpToClarification(input.history as Pick<Message, "role" | "speaker" | "content" | "stage">[]);
 
   // Tony-only — one pass and done
-  if (input.tonyOnly) {
+  if (input.tonyOnly && !isFollowUp) {
     const raw = await llm([
       {
         role: "system",
@@ -171,22 +180,26 @@ ${formatAdvisorVoiceContract("Tony", "intake")}
 
 ${input.context}
 
-You are reading the CEO's message. Give your honest read of what's really going on.
+You are reading the CEO's message.
 
-Choose path:
-- "clarify": you need one more piece of info before routing. Ask ONE specific question.
-- "route": you have enough. Tell the CEO what you're seeing and name exactly who you're calling in and the specific question you're putting to each person.
+${isFollowUp
+  ? `CRITICAL: Your previous message asked a clarifying question. The CEO just answered it. You MUST choose path "route" now — do NOT ask another question. Take what you know and call the room. The conversation history has your question and their answer.`
+  : `Choose path:
+- "clarify": you need ONE more specific piece of info. Only clarify if genuinely unclear. Do NOT clarify on short affirmative messages like "yes", "let's go", "show me" — those are green lights, not questions.
+- "route": you have enough. Name who you're calling and the specific question for each.`
+}
 
 Advisor selection rules:
 - Andrej ONLY for genuine technical/AI/code questions. Leave him out otherwise.
 - Chanos is ALWAYS called separately — do NOT include him in selectedAdvisors.
-- "full table" or "everyone" = include Russell, Allen, Andrej, Calvina.
+- "full table", "everyone", or "all advisors" = include Russell, Allen, Calvina (and Andrej if technical).
+- Short affirmative messages ("yes", "let's go", "show me", "do it") = the CEO confirmed. Route immediately using context from conversation history.
 
 Return JSON only:
 {
   "speaker": "Tony",
   "path": "clarify|route",
-  "message": "Tony's message — his read and what he needs or who he's calling",
+  "message": "Tony's message — his read and routing call. 100-180 words max. No ---. No ##.",
   "selectedAdvisors": ["Russell", "Allen"],
   "advisorQuestions": { "Russell": "specific question", "Allen": "specific question" },
   "includeAndrej": false,
