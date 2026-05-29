@@ -7,6 +7,7 @@ import {
   ArrowDownToLine,
   Briefcase,
   CheckCircle2,
+  ClipboardCopy,
   FileText,
   KeyRound,
   LogOut,
@@ -307,6 +308,18 @@ export function BoardroomApp() {
 
   // ── Message Helpers ──────────────────────────────────────────────────────────
 
+  async function copyText(text: string) {
+    await navigator.clipboard.writeText(text);
+    showToast("✓ Copied to clipboard");
+  }
+
+  function copyAllMessages() {
+    const text = messages
+      .map(m => `[${m.speaker}${m.stage ? ` — ${m.stage.replace(/_/g, " ")}` : ""}]\n${m.content}`)
+      .join("\n\n---\n\n");
+    copyText(text);
+  }
+
   function stageBorderClass(stage: string, role: string) {
     if (role === "user") return "";
     return STAGE_COLORS[stage] || "border-stone-300";
@@ -437,6 +450,15 @@ export function BoardroomApp() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {messages.length > 0 && (
+              <button
+                onClick={copyAllMessages}
+                className="flex items-center gap-1.5 border border-stone-300 px-3 py-1.5 text-xs text-stone-500 hover:border-teal hover:text-teal transition-colors"
+                title="Copy entire conversation"
+              >
+                <ClipboardCopy size={12} /> Copy All
+              </button>
+            )}
             {channel === "brainstorming" && (
               <button
                 onClick={() => setTonyOnly(v => !v)}
@@ -472,14 +494,21 @@ export function BoardroomApp() {
                 ) : null}
 
                 {messages.map((message) => (
-                  <article key={message.id} className={`mb-3 ${message.role === "user" ? "flex justify-end" : ""}`}>
+                  <article key={message.id} className={`group mb-3 ${message.role === "user" ? "flex justify-end" : ""}`}>
                     {message.role === "user" ? (
-                      <div className="max-w-2xl border border-teal bg-teal px-4 py-3 text-white">
+                      <div className="relative max-w-2xl border border-teal bg-teal px-4 py-3 text-white">
                         <div className="mb-1 text-xs font-bold uppercase tracking-wide opacity-70">You</div>
                         <div className="text-sm leading-6 whitespace-pre-wrap">{message.content}</div>
+                        <button
+                          onClick={() => copyText(message.content)}
+                          className="absolute right-2 top-2 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+                          title="Copy message"
+                        >
+                          <ClipboardCopy size={12} />
+                        </button>
                       </div>
                     ) : (
-                      <div className={`max-w-4xl border bg-white px-4 py-3 ${stageBorderClass(message.stage, message.role)}`}>
+                      <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageBorderClass(message.stage, message.role)}`}>
                         <div className="mb-1 flex items-center gap-2">
                           {ADVISOR_META[message.speaker] && (
                             <span className={`h-2 w-2 rounded-full ${ADVISOR_META[message.speaker].dot}`} />
@@ -490,6 +519,13 @@ export function BoardroomApp() {
                             {message.stage === "tony_close" && <span className="ml-1 text-gold">· decision</span>}
                             {message.stage === "tony_intake" && <span className="ml-1 text-teal">· intake</span>}
                           </span>
+                          <button
+                            onClick={() => copyText(message.content)}
+                            className="ml-auto opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity text-stone-400"
+                            title="Copy message"
+                          >
+                            <ClipboardCopy size={12} />
+                          </button>
                         </div>
                         <div className="prose prose-sm max-w-none text-sm leading-6 prose-headings:font-bold prose-headings:text-stone-900 prose-p:my-1 prose-strong:font-bold prose-strong:text-stone-900 prose-ul:my-1 prose-ul:pl-4 prose-li:my-0.5 prose-ol:my-1 prose-ol:pl-4 prose-blockquote:border-l-2 prose-blockquote:border-stone-300 prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-stone-600 prose-code:bg-stone-100 prose-code:px-1 prose-code:rounded prose-code:text-xs">
                           <ReactMarkdown>{message.content}</ReactMarkdown>
