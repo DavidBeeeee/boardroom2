@@ -37,7 +37,7 @@ function normalizeAdvisorSelection(names: unknown, mode: ModeContext, userPrompt
     ? names.map(canonicalAdvisor).filter((name): name is NonTonyAdvisor => name !== "Tony")
     : [];
   if (explicit.length) selected = explicit;
-  if (!selected.length) selected = [mode.laneAdvisor];
+  if (!selected.length) selected = [mode.laneAdvisor as AdvisorName];
   if (meaningfulDecision(userPrompt) && !selected.includes("Chanos")) selected.push("Chanos");
   return [...new Set(selected)].slice(0, mode.depth === "deep" ? 5 : 3);
 }
