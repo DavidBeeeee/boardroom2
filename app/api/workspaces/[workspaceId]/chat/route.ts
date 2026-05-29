@@ -125,13 +125,28 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       insertedCards = cards as AdvisorCard[];
     }
 
-    const summary = generated.turns.find((turn) => turn.stage === "tony_close")?.content || generated.turns.at(-1)?.content || "";
-    await authed.supabase.from("memory_entries").insert({
-      workspace_id: workspaceId,
-      kind: "session_summary",
-      content: summary.slice(0, 1800),
-      metadata: { conversationId, source: "chat_route" }
-    });
+    const tonyClose = generated.turns.find((turn) => turn.stage === "tony_close");
+    const summary = tonyClose?.content || generated.turns.at(-1)?.content || "";
+    const tension = generated.tension || "";
+    const advisorNames = generated.turns.filter(t => t.stage === "advisor_turn").map(t => t.speaker);
+    const challengeNames = generated.turns.filter(t => t.stage === "challenge_turn").map(t => t.speaker);
+    const cardTitles = generated.cards.map(c => c.title);
+
+    if (summary) {
+      await authed.supabase.from("memory_entries").insert({
+        workspace_id: workspaceId,
+        kind: "session_summary",
+        content: [
+          `Prompt: ${text.slice(0, 300)}`,
+          tension ? `Tension: ${tension}` : "",
+          `Advisors: ${advisorNames.join(", ")}`,
+          challengeNames.length ? `Challenge: ${challengeNames.join(", ")}` : "",
+          cardTitles.length ? `Cards: ${cardTitles.join(" | ")}` : "",
+          `Decision: ${summary.slice(0, 800)}`,
+        ].filter(Boolean).join("\n"),
+        metadata: { conversationId, tension, advisors: advisorNames, cards: cardTitles, source: "chat_route" }
+      });
+    }
     await authed.supabase.from("conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
 
     return NextResponse.json({
