@@ -2,6 +2,8 @@ import type { AdvisorName, BoardroomTurn, GeneratedCard, Message, ModeContext } 
 import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket } from "./advisors";
 import { callDeepSeek, type ChatMessage } from "./deepseek";
 
+type NonTonyAdvisor = Exclude<AdvisorName, "Tony">;
+
 function parseJson<T>(raw: string): T {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const text = fenced ? fenced[1] : raw;
@@ -17,10 +19,10 @@ function canonicalAdvisor(name: unknown): AdvisorName {
   return (["Tony", ...ALL_ADVISORS] as AdvisorName[]).find((n) => n.toLowerCase() === clean.toLowerCase()) || "Tony";
 }
 
-function requestedAdvisors(text: string): AdvisorName[] {
+function requestedAdvisors(text: string): NonTonyAdvisor[] {
   const hits = [...text.matchAll(/@(Tony|Russell|Russel|Allen|Chanos|Jim|James|Andrej|Calvina)\b/gi)]
     .map((m) => canonicalAdvisor(m[1]))
-    .filter((name) => name !== "Tony");
+    .filter((name): name is NonTonyAdvisor => name !== "Tony");
   if (/\b(everyone|all advisors|full table|whole team|full boardroom)\b/i.test(text)) return ALL_ADVISORS;
   return [...new Set(hits)];
 }
@@ -31,7 +33,9 @@ function meaningfulDecision(text: string) {
 
 function normalizeAdvisorSelection(names: unknown, mode: ModeContext, userPrompt: string) {
   const explicit = requestedAdvisors(userPrompt);
-  let selected = Array.isArray(names) ? names.map(canonicalAdvisor).filter((n) => n !== "Tony") : [];
+  let selected: NonTonyAdvisor[] = Array.isArray(names)
+    ? names.map(canonicalAdvisor).filter((name): name is NonTonyAdvisor => name !== "Tony")
+    : [];
   if (explicit.length) selected = explicit;
   if (!selected.length) selected = [mode.laneAdvisor];
   if (meaningfulDecision(userPrompt) && !selected.includes("Chanos")) selected.push("Chanos");
