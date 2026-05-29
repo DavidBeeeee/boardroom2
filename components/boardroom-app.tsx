@@ -38,14 +38,24 @@ const ADVISOR_META: Record<string, { role: string; dot: string }> = {
   Calvina: { role: "NLP / WILD Coach", dot: "bg-teal-400" },
 };
 
-const STAGE_COLORS: Record<string, string> = {
-  tony_intake:       "border-l-4 border-l-teal",
-  advisor_turn:      "border-stone-300",
-  challenge_turn:    "border-l-4 border-l-coral",
-  tony_close:        "border-l-4 border-l-gold",
-  tony_only:         "border-l-4 border-l-teal",
-  advisor_one_to_one:"border-stone-300",
-};
+function stageColor(stage: string): string {
+  if (stage === "tony_intake" || stage === "tony_only") return "border-l-4 border-l-teal";
+  if (stage === "tony_close") return "border-l-4 border-l-gold";
+  if (stage.startsWith("chanos_round")) return "border-l-4 border-l-coral";
+  if (stage.startsWith("advisor_round")) return "border-stone-300";
+  if (stage === "advisor_one_to_one") return "border-stone-300";
+  return "border-stone-300";
+}
+
+function stageTag(stage: string, speaker: string): string | null {
+  if (stage === "tony_intake") return "intake";
+  if (stage === "tony_close") return "decision";
+  if (stage === "tony_only") return "response";
+  if (stage.startsWith("chanos_round")) return `challenge · round ${stage.split("_").pop()}`;
+  if (stage.startsWith("advisor_round")) return `round ${stage.split("_").pop()}`;
+  if (stage === "advisor_one_to_one") return "1:1";
+  return null;
+}
 
 const MORNING_BRIEF_PROMPT = `Morning Brief. Pull my open advisor work cards, recent decisions, and any unresolved tension from previous sessions. Give me the three most important things to focus on today. Close with one physical action I can take in the next 20 minutes that will move the needle most.`;
 
@@ -320,14 +330,6 @@ export function BoardroomApp() {
     copyText(text);
   }
 
-  function stageBorderClass(stage: string, role: string) {
-    if (role === "user") return "";
-    return STAGE_COLORS[stage] || "border-stone-300";
-  }
-
-  function stageLabel(stage: string) {
-    return stage.replace(/_/g, " ");
-  }
 
   // ── Login Screen ─────────────────────────────────────────────────────────────
 
@@ -508,16 +510,18 @@ export function BoardroomApp() {
                         </button>
                       </div>
                     ) : (
-                      <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageBorderClass(message.stage, message.role)}`}>
+                      <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageColor(message.stage)}`}>
                         <div className="mb-1 flex items-center gap-2">
                           {ADVISOR_META[message.speaker] && (
                             <span className={`h-2 w-2 rounded-full ${ADVISOR_META[message.speaker].dot}`} />
                           )}
                           <span className="text-xs font-bold uppercase tracking-wide text-stone-500">
                             {message.speaker}
-                            {message.stage === "challenge_turn" && <span className="ml-1 text-coral">· challenge</span>}
-                            {message.stage === "tony_close" && <span className="ml-1 text-gold">· decision</span>}
-                            {message.stage === "tony_intake" && <span className="ml-1 text-teal">· intake</span>}
+                            {stageTag(message.stage, message.speaker) && (
+                              <span className={`ml-1 ${message.stage.startsWith("chanos_round") ? "text-coral" : message.stage === "tony_close" ? "text-gold" : "text-teal"}`}>
+                                · {stageTag(message.stage, message.speaker)}
+                              </span>
+                            )}
                           </span>
                           <button
                             onClick={() => copyText(message.content)}
@@ -536,7 +540,7 @@ export function BoardroomApp() {
                 ))}
 
                 {/* Continue button */}
-                {messages.length > 0 && messages[messages.length - 1]?.stage === "tony_close" && !busy && (
+                {messages.length > 0 && (messages[messages.length - 1]?.stage === "tony_close" || messages[messages.length - 1]?.stage === "tony_intake") && !busy && (
                   <div className="mb-4 flex justify-center">
                     <button
                       onClick={() => setComposer("Continue the discussion. Pick up the most important unresolved thread — push it further, stress-test the conclusion, or surface anything the team glossed over. Close with a refined action plan.")}
