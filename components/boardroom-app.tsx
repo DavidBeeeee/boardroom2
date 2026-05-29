@@ -131,7 +131,7 @@ export function BoardroomApp() {
   function isNearBottom() {
     const el = scrollRef.current;
     if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 30;
   }
 
   function scrollToBottom() {
@@ -257,12 +257,24 @@ export function BoardroomApp() {
 
     const sendChannel = channel; // capture channel at send time
 
-    // Show Tony typing IMMEDIATELY before the API call
+    // Immediately show user message + Tony typing before the API call
+    const pendingId = `pending-${Date.now()}`;
     flushSync(() => {
       setBusy(true);
+      setComposer("");
       setTypingAdvisor("Tony");
+      setMessages(current => [...current, {
+        id: pendingId,
+        workspace_id: workspaceId,
+        conversation_id: conversationId,
+        role: "user" as const,
+        speaker: "You",
+        content: text,
+        stage: "user_prompt",
+        metadata: {},
+        created_at: new Date().toISOString(),
+      }]);
     });
-    setComposer("");
 
     try {
       const payload = await api(`/api/workspaces/${workspaceId}/chat`, {
@@ -283,9 +295,14 @@ export function BoardroomApp() {
         setConversationId(payload.conversationId);
       }
 
-      // Clear the Tony pre-typing indicator, add user message
-      flushSync(() => setTypingAdvisor(null));
-      flushSync(() => setMessages(current => [...current, payload.userMessage].filter(Boolean)));
+      // Replace pending message with the real one from DB
+      flushSync(() => {
+        setTypingAdvisor(null);
+        setMessages(current => {
+          const withoutPending = current.filter(m => m.id !== pendingId);
+          return payload.userMessage ? [...withoutPending, payload.userMessage] : withoutPending;
+        });
+      });
 
       // Animate advisor messages with proper typing indicators
       await displayMessagesWithTyping(payload.messages || []);
@@ -578,10 +595,10 @@ export function BoardroomApp() {
                           {ADVISOR_META[message.speaker] && (
                             <span className={`h-2 w-2 rounded-full ${ADVISOR_META[message.speaker].dot}`} />
                           )}
-                          <span className="text-xs font-bold uppercase tracking-wide text-stone-500">
+                          <span className="text-sm font-bold text-stone-800">
                             {message.speaker}
                             {stageTag(message.stage, message.speaker) && (
-                              <span className={`ml-1 ${message.stage.startsWith("chanos_round") ? "text-coral" : message.stage === "tony_close" ? "text-gold" : "text-teal"}`}>
+                              <span className={`ml-1.5 text-xs font-semibold ${message.stage.startsWith("chanos_round") ? "text-coral" : message.stage === "tony_close" ? "text-gold" : "text-teal"}`}>
                                 · {stageTag(message.stage, message.speaker)}
                               </span>
                             )}
