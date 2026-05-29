@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import {
   ArrowDownToLine,
@@ -125,7 +126,7 @@ export function BoardroomApp() {
   const showToast = useCallback((message: string) => {
     const id = ++toastId.current;
     setToasts(t => [...t, { id, message }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 6000);
   }, []);
 
   // ── API Helpers ─────────────────────────────────────────────────────────────
@@ -200,14 +201,19 @@ export function BoardroomApp() {
   async function displayMessagesWithTyping(newMessages: Message[]) {
     for (const msg of newMessages) {
       if (msg.role === "assistant") {
-        setTypingAdvisor(msg.speaker);
+        // flushSync forces React to render the typing indicator immediately
+        // before the async pause — without this, React 18 batches it away
+        flushSync(() => {
+          setTypingAdvisor(msg.speaker);
+        });
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-        const delay = Math.min(500 + msg.content.length * 0.7, 2000);
+        const delay = Math.min(600 + msg.content.length * 0.8, 2200);
         await pause(delay);
-        setTypingAdvisor(null);
+        flushSync(() => setTypingAdvisor(null));
       }
-      setMessages(current => [...current, msg]);
-      await pause(60);
+      flushSync(() => setMessages(current => [...current, msg]));
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      await pause(80);
     }
   }
 
@@ -556,7 +562,7 @@ export function BoardroomApp() {
                     className="h-20 w-full resize-none border border-stone-300 p-3 text-sm focus:border-teal focus:outline-none"
                     value={composer}
                     onChange={(e) => setComposer(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendMessage(); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                     placeholder={channel === "brainstorming" ? "Ask the Boardroom…  ⌘↵ to send" : `Work with ${channel}…  ⌘↵ to send`}
                   />
                   <div className="mt-2 flex items-center gap-2">
