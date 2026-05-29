@@ -23,7 +23,7 @@ function requestedAdvisors(text: string): NonTonyAdvisor[] {
   const hits = [...text.matchAll(/@(Tony|Russell|Russel|Allen|Chanos|Jim|James|Andrej|Calvina)\b/gi)]
     .map((m) => canonicalAdvisor(m[1]))
     .filter((name): name is NonTonyAdvisor => name !== "Tony");
-  if (/\b(everyone|all advisors|full table|whole team|full boardroom)\b/i.test(text)) return ALL_ADVISORS;
+  if (/\b(everyone|all advisors|full table|whole team|full boardroom)\b/i.test(text)) return [...ALL_ADVISORS] as NonTonyAdvisor[];
   return [...new Set(hits)];
 }
 
