@@ -162,15 +162,9 @@ export async function runTonyIntake(input: {
     tension: "What's the real constraint?",
   };
 
-  const intake = await structured<{
-    speaker: "Tony";
-    path: "clarify" | "route";
-    message: string;
-    selectedAdvisors: AdvisorName[];
-    advisorQuestions: Record<string, string>;
-    includeAndrej: boolean;
-    tension: string;
-  }>([
+  // Two-step approach: Tony writes his message as plain text FIRST,
+  // then outputs a small routing JSON. This prevents JSON-breaking special chars.
+  const rawTonyResponse = await llm([
     {
       role: "system",
       content: `${BOARDROOM_GUARDRAILS}
@@ -183,33 +177,54 @@ ${input.context}
 You are reading the CEO's message.
 
 ${isFollowUp
-  ? `CRITICAL: Your previous message asked a clarifying question. The CEO just answered it. You MUST use path "route" — NOT "clarify". Call the room now with what you know.`
-  : `DEFAULT: Use path "route". Give your read of the situation and call in the right advisors immediately.
-Only use "clarify" if you genuinely cannot pick a single advisor without one more piece of info — this should be rare. Business questions, life questions, launch questions, money questions — you always have enough to route.`
+  ? `CRITICAL: Your previous message asked a clarifying question. The CEO just answered it. You MUST route now — do NOT ask another question.`
+  : `DEFAULT: Route immediately. Give your honest read and call in the right advisors.
+Only add a clarifying question if you genuinely cannot pick any advisor without one more fact.`
 }
 
-Advisor selection — always pick at least one:
-- Business/money/launch/offer: Russell + Allen (always), Calvina if mindset is relevant
-- Life/identity/state: Calvina + Allen
-- Technical/code/AI/automation: Andrej + Russell
-- "everyone" / "full table" / "all advisors": Russell + Allen + Calvina (+ Andrej if technical)
-- Chanos is ALWAYS separate — NEVER include him in selectedAdvisors
-- Default if unclear: [mode.laneAdvisor] = "${input.mode.laneAdvisor}"
+Advisor rules:
+- Business/money/launch: Russell + Allen, add Calvina if mindset matters
+- Life/identity/emotions: Calvina + Allen
+- Technical/code/AI: Andrej + Russell
+- "everyone" or "full table": Russell + Allen + Calvina (+ Andrej if technical)
+- Chanos is ALWAYS separate — never list him in selectedAdvisors
+- Default: ${input.mode.laneAdvisor}
 
-Return JSON only — selectedAdvisors must have at least one name:
-{
-  "speaker": "Tony",
-  "path": "route",
-  "message": "Tony's read + who he's calling and the specific question for each. 100-180 words. No ---. No ##. Use bold and emojis.",
-  "selectedAdvisors": ["Russell", "Allen"],
-  "advisorQuestions": { "Russell": "specific question for Russell", "Allen": "specific question for Allen" },
-  "includeAndrej": false,
-  "tension": "one sentence naming the core tension or unknown"
-}`
+Write your response in TWO parts separated by ---ROUTING---
+
+PART 1: Your message to David (100-180 words, use **bold** and emojis, no --- dividers, no ## headers, speak like Tony)
+
+---ROUTING---
+
+PART 2: JSON routing block only (no other text):
+{"path":"route","selectedAdvisors":["Russell","Allen"],"advisorQuestions":{"Russell":"question","Allen":"question"},"tension":"one sentence"}`
     },
     ...baseHistory,
     { role: "user", content: input.userPrompt }
-  ], input.clientApiKey, fallback);
+  ], input.clientApiKey);
+
+  // Split on the routing separator
+  const separatorIdx = rawTonyResponse.indexOf("---ROUTING---");
+  let tonyMessage = separatorIdx > 0
+    ? rawTonyResponse.slice(0, separatorIdx).trim()
+    : rawTonyResponse.trim();
+  const routingRaw = separatorIdx > 0
+    ? rawTonyResponse.slice(separatorIdx + 13).trim()
+    : "";
+
+  // Parse routing JSON
+  let routing = fallback;
+  if (routingRaw) {
+    try { routing = { ...fallback, ...parseJson<typeof fallback>(routingRaw) }; }
+    catch { /* keep fallback */ }
+  }
+
+  // If Tony didn't write a real message, use his routing signal
+  if (!tonyMessage || tonyMessage.length < 20) {
+    tonyMessage = routing.message || fallback.message;
+  }
+
+  const intake = { ...routing, message: tonyMessage };
 
   const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: intake.message }];
 
