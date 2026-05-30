@@ -237,13 +237,11 @@ export function BoardroomApp() {
         flushSync(() => {
           setTypingAdvisor(msg.speaker);
         });
-        scrollToBottomIfFollowing();
         const delay = Math.min(600 + msg.content.length * 0.8, 2200);
         await pause(delay);
         flushSync(() => setTypingAdvisor(null));
       }
       flushSync(() => setMessages(current => [...current, msg]));
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
       await pause(80);
     }
   }
@@ -335,8 +333,6 @@ export function BoardroomApp() {
       setComposer("");
       setTypingAdvisor("Tony");
     });
-    // Force scroll when user sends — they want to see the response
-    forceScrollToBottom();
     flushSync(() => {
       setMessages(current => [...current, {
         id: pendingId,
