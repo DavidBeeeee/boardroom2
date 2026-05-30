@@ -264,9 +264,18 @@ export async function runAdvisorRound(input: {
     ? `PREVIOUS DISCUSSION:\n${turnsToContext(sessionState.allTurns.slice(1))}`
     : "";
 
+  // Build a summary of the most recent round's turns for advisors to respond to
+  const lastRoundTurns = sessionState.allTurns.filter(
+    t => t.stage === `advisor_round_${round - 1}` || t.stage === `chanos_round_${round - 1}`
+  );
+  const lastRoundContext = lastRoundTurns.length
+    ? `WHAT WAS JUST SAID (round ${round - 1} — this is what you are responding to):\n${turnsToContext(lastRoundTurns)}`
+    : "";
+
   // Run each advisor in parallel as plain text — no JSON, no parsing failures
   const advisorResponses = await Promise.all(
     advisors.map(async (advisor) => {
+      const isRound1 = round === 1;
       const message = await llm([
         {
           role: "system",
@@ -277,16 +286,26 @@ ${formatAdvisorVoiceContract(advisor, `round_${round}`)}
 
 ${input.context}
 
-USER'S QUESTION: ${sessionState.userPrompt}
-
+ORIGINAL QUESTION (background only): ${sessionState.userPrompt}
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
-${previousContext}
+${isRound1
+  ? `TONY'S QUESTION FOR YOU: ${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}\n\nAnswer from your lane. This is round 1 — give your best take on the situation.`
+  : `${lastRoundContext}
 
-TONY'S QUESTION FOR YOU: ${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}
+YOUR TASK FOR ROUND ${round}:
+You are NOT re-answering the original question. You are responding to what was just said in round ${round - 1} above.
 
-Write your response as ${advisor}. Plain text only — no JSON, no code blocks.
-${round > 1 ? "You heard the previous round including Chanos. Respond to what was said — agree, challenge, or build on it directly by name." : ""}
+- What specifically do you AGREE with from the last round, and why?
+- What specifically do you CHALLENGE or think is WRONG, and why?
+- What NEW angle, number, or move can you add that NOBODY has named yet?
+
+If you find yourself saying the same thing as your previous round, STOP and find the new insight. The room has already heard your round 1 position. What changed? What did Chanos or another advisor say that forces you to revise, sharpen, or fight back?
+
+Name the other advisors by name when you respond to them.`
+}
+
+Write as ${advisor}. Plain text only — no JSON, no code blocks.
 150-300 words. Full personality. Bold key phrases. Emojis. No --- dividers. No ## headers.`
         },
         ...baseHistory,
@@ -331,6 +350,14 @@ export async function runChanosRound(input: {
   const round = sessionState.currentChanosRound + 1;
   const baseHistory = historyMessages(input.history);
 
+  // Get the most recent advisor round turns — this is what Chanos is critiquing
+  const latestAdvisorRound = sessionState.allTurns.filter(
+    t => t.stage === `advisor_round_${round}`
+  );
+  const latestAdvisorContext = latestAdvisorRound.length
+    ? `WHAT THE ADVISORS JUST SAID IN ROUND ${round} — THIS IS WHAT YOU ARE SHORTING:\n${turnsToContext(latestAdvisorRound)}`
+    : `DISCUSSION SO FAR:\n${turnsToContext(sessionState.allTurns.slice(1))}`;
+
   const raw = await llm([{
     role: "system",
     content: `${BOARDROOM_GUARDRAILS}
@@ -340,18 +367,22 @@ ${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`)}
 
 ${input.context}
 
-USER'S QUESTION: ${sessionState.userPrompt}
-
+ORIGINAL QUESTION (background only): ${sessionState.userPrompt}
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
-DISCUSSION SO FAR:
-${turnsToContext(sessionState.allTurns.slice(1))}
+${latestAdvisorContext}
 
-You are Chanos. Round ${round} critique. Short the plan.
+You are Chanos. Your job is to SHORT THE ADVISORS' ARGUMENTS FROM ROUND ${round} ABOVE — not to respond to the original question again.
 
-Structure: name the promotional narrative → find the fatal assumption → audit the math or execution → name the ONE red flag Tony must resolve.
+${round > 1 ? `You already made your round ${round - 1} critique. Do NOT repeat it. Find the NEW fatal assumption in what the advisors just said in round ${round}.` : ""}
 
-NO --- dividers. NO ## headers. 150-300 words. Speak like a villain, not an essayist.`
+Structure:
+1. Name the specific thing an advisor just said that you're shorting (quote them by name)
+2. Find the fatal assumption in their NEW argument
+3. Audit the specific math or claim they just made
+4. Name the ONE red flag Tony must resolve before the close
+
+NO --- dividers. NO ## headers. 150-300 words. Villain energy, not essay energy.`
   },
   ...baseHistory,
   { role: "user", content: sessionState.userPrompt }
