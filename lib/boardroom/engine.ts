@@ -417,15 +417,9 @@ export async function runTonyClose(input: {
   const { sessionState, mode } = input;
   const baseHistory = historyMessages(input.history);
 
-  const fallbackDecision = "Take the smallest action that tests the real constraint.";
-
-  const close = await structured<{
-    speaker: "Tony";
-    decision: string;
-    decisionBrief: Record<string, string>;
-    message: string;
-    actionCards: GeneratedCard[];
-  }>([{
+  // Tony writes his close as rich free-form markdown, then a small JSON block for cards only.
+  // This prevents the JSON-breaking problem from long rich text in JSON strings.
+  const rawClose = await llm([{
     role: "system",
     content: `${BOARDROOM_GUARDRAILS}
 
@@ -434,62 +428,78 @@ ${formatAdvisorVoiceContract("Tony", "close")}
 
 ${input.context}
 
-USER'S QUESTION: ${sessionState.userPrompt}
+ORIGINAL QUESTION: ${sessionState.userPrompt}
 
-FULL DISCUSSION:
+FULL BOARDROOM DISCUSSION — READ ALL OF IT BEFORE YOU WRITE ANYTHING:
 ${turnsToContext(sessionState.allTurns)}
 
-CORE TENSION: ${sessionState.tension}
+CORE TENSION IDENTIFIED: ${sessionState.tension}
 
-Close the session. Make the call.
+You are Tony. You just sat in a hard room. You heard every advisor, every challenge, every Chanos critique. Now you make the call.
 
-CONTRACT:
-- Reconcile the strongest argument AND Chanos's red flag. Both must visibly shape the decision.
-- Name the tension explicitly.
-- Write like a COO who just sat in a hard room — not a consultant summarizing.
-- Suggest 0-${mode.cardLimit} Advisor Work Cards. Specific, actionable, one task each.
-- NO --- dividers. NO ## headers. Use **bold** for key phrases inline.
+YOUR CLOSE MUST:
+- Be LONGER and RICHER than a typical message — this is your synthesis of everything the room produced
+- Name the strongest argument that won AND the Chanos red flag that constrained it — both must be visible
+- Make a specific, real decision — not a platitude, a call
+- Give a sequenced action plan, not just one step — this is your final word, make it count
+- Use **bold** for key phrases, emojis naturally, section breaks with blank lines
+- Sound like a decisive COO who just ran a hard meeting, not a consultant writing a summary
+- NO --- dividers between sections. NO ## headers. Write in your voice, not report format.
 
-Return JSON only:
-{
-  "speaker": "Tony",
-  "decision": "one clear specific decision",
-  "decisionBrief": {
-    "whyThisCall": "why, naming the tension and how it was resolved",
-    "notDoing": "what we're explicitly not doing",
-    "nextPhysicalAction": "one thing in the next 20 minutes",
-    "artifactToCreate": "specific document to create",
-    "checkpoint": "how you'll know it worked"
-  },
-  "message": "**DECISION**\\n[decision]\\n\\n**WHY THIS IS THE CALL**\\n[why]\\n\\n**WHAT WE ARE NOT DOING**\\n[not doing]\\n\\n**NEXT PHYSICAL ACTION**\\n[action]\\n\\n**ARTIFACT TO CREATE**\\n[artifact]\\n\\n**CHECKPOINT**\\n[checkpoint]",
-  "actionCards": [{"title":"...","advisor":"Russell","workType":"draft","context":"...","desiredOutput":"..."}]
-}`
+FORMAT — write your full close first, then the cards JSON block:
+
+[Write Tony's full close here — 300-500 words. Use this structure naturally in your own voice:
+THE CALL: one sharp sentence naming the decision
+WHY THIS IS THE CALL: reconcile the room — name who was right, what the tension was, how it resolves
+WHAT WE ARE NOT DOING: name the tempting paths explicitly ruled out
+THE SEQUENCE: 3-5 specific ordered actions with timeframes, not just one next step
+THE CHECKPOINT: how David will know this worked]
+
+\`\`\`json
+{"decision":"one clear decision sentence","actionCards":[{"title":"specific card title","advisor":"Russell","workType":"draft","context":"why this matters","desiredOutput":"what to create"}]}
+\`\`\``
   },
   ...baseHistory,
   { role: "user", content: sessionState.userPrompt }
-  ], input.clientApiKey, {
-    speaker: "Tony" as const,
-    decision: fallbackDecision,
-    decisionBrief: {
-      whyThisCall: `The room surfaced: ${turnsToContext(sessionState.allTurns.slice(1)).slice(0, 400)}`,
-      notDoing: "Adding complexity before validating the core assumption.",
-      nextPhysicalAction: "Open a document and draft the artifact the room pointed toward.",
-      artifactToCreate: "Session follow-up artifact",
-      checkpoint: "The move worked if it produces a real artifact or a named constraint."
-    },
-    message: "",
-    actionCards: [],
-  });
+  ], input.clientApiKey);
+
+  // Extract Tony's close message — everything before the ```json block
+  const codeBlockIdx = rawClose.indexOf("```");
+  let closeMessage = codeBlockIdx > 0
+    ? rawClose.slice(0, codeBlockIdx).trim()
+    : rawClose.trim();
+
+  if (!closeMessage || closeMessage.length < 50) {
+    closeMessage = formatClose({
+      decision: "Take the smallest action that tests the real constraint.",
+      decisionBrief: {
+        whyThisCall: `The room surfaced key tension: ${sessionState.tension}`,
+        notDoing: "Adding complexity before validating the core assumption.",
+        nextPhysicalAction: "Take the first physical action the room identified.",
+        artifactToCreate: "Session follow-up artifact",
+        checkpoint: "The move worked if it produces a real artifact or a named constraint."
+      }
+    });
+  }
+
+  // Extract cards from JSON block
+  let cards: GeneratedCard[] = [];
+  let decision = "Move forward with the plan the room identified.";
+  try {
+    const parsed = parseJson<{ decision?: string; actionCards?: GeneratedCard[] }>(rawClose);
+    if (parsed.decision) decision = parsed.decision;
+    if (parsed.actionCards) cards = parsed.actionCards;
+  } catch { /* no cards if JSON fails */ }
 
   const turn: BoardroomTurn = {
     speaker: "Tony",
     stage: "tony_close",
-    content: close.message || formatClose(close),
+    content: closeMessage,
   };
 
   return {
     turns: [turn],
-    cards: normalizeCards(close.actionCards ?? [], mode, close.decision),
+    cards: normalizeCards(cards, mode, decision),
     tension: sessionState.tension,
     nextStage: "done",
     sessionState: { ...sessionState, allTurns: [...sessionState.allTurns, turn] },
