@@ -20,7 +20,7 @@ export function buildBoardroomContext(input: ContextInput) {
     parts.push(
       `WORKSPACE DOCUMENTS (treat as verified business context):\n` +
       input.documents.slice(0, 6).map((doc) =>
-        `[${doc.name}]\n${doc.extracted_text.slice(0, 4500)}`
+        `[${doc.name}]\n${doc.extracted_text.slice(0, 20000)}`
       ).join("\n\n")
     );
   }
