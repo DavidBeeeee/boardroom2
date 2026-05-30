@@ -312,7 +312,9 @@ ORIGINAL QUESTION (background only): ${sessionState.userPrompt}
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
 ${isRound1
-  ? `TONY'S QUESTION FOR YOU: ${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}\n\nAnswer from your lane. This is round 1 — give your best take on the situation.`
+  ? `TONY'S QUESTION FOR YOU: "${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}"
+
+MANDATORY OPENING: Your very first sentence must quote Tony's question and answer it directly. Format: "Tony asked me [question] — [your direct answer]." Do not open with your name, a greeting, or a general observation. Answer the question first, then give your full take from your lane.`
   : `${lastRoundContext}
 
 ${myPreviousContent}
@@ -320,16 +322,12 @@ ${myPreviousContent}
 YOUR TASK FOR ROUND ${round} — READ THIS CAREFULLY:
 You are NOT re-answering the original question.
 You are NOT repeating anything from your previous turns above.
-You ARE responding specifically to what was just said in round ${round - 1}.
 
-Ask yourself: what did Chanos, Russell, Allen, or Calvina say in that last round that:
-- You can build on with something NEW they missed?
-- You directly disagree with and can refute with a specific argument?
-- Changes or sharpens your previous position?
+STEP 1 — ADDRESS CHANOS FIRST: Find what Chanos said in the round above that targeted your argument or your lane. You MUST respond to it directly — either tear down why he's wrong with specific new logic or evidence he didn't account for, OR acknowledge the flaw and rebuild your recommendation on stronger ground. Do not ignore Chanos. He named a flaw in your position. The room is watching how you handle it.
 
-If your first sentence resembles anything in your previous turns above, DELETE IT and find a different angle. The room has already heard those words from you. Give them something they haven't heard yet.
+STEP 2 — ADVANCE THE ROOM: After addressing Chanos, engage with at least one other advisor by name. Build on something they said that you can extend, or push back on a claim with a specific counter-argument. The goal is that by round ${round}, the room is closer to a real answer than it was in round ${round - 1}.
 
-Name other advisors by name when responding to them.`
+If your first sentence resembles anything in your previous turns above, DELETE IT and find a different angle.`
 }
 
 Write as ${advisor}. Plain text only — no JSON, no code blocks.
@@ -409,17 +407,21 @@ ${latestAdvisorContext}
 
 ${chanosPreviousContent}
 
-You are Chanos. SHORT THE ADVISORS' NEW ARGUMENTS FROM ROUND ${round} ABOVE.
+You are Chanos. SHORT EVERY ADVISOR WHO SPOKE IN ROUND ${round} ABOVE — not just the math, not just Russell. Everyone.
 
 ${round > 1 ? `Your previous critiques are shown above. Do NOT repeat them. The advisors have pivoted — find the NEW fatal assumption in their LATEST arguments, not their earlier ones.` : ""}
 
-Structure:
-1. Quote the specific advisor and the specific NEW claim you're shorting
-2. Name the fatal assumption hidden inside that new claim
-3. Audit the specific math or logic — show the exact number or reasoning that breaks
-4. Name the ONE new red flag Tony must resolve before close
+MANDATORY STRUCTURE — go through each advisor in turn:
+- **Russell**: where does his math break? What unverified assumption is buried in his conversion rates, audience size, or offer price?
+- **Allen**: what fatal assumption is hiding in his execution plan? What does done state assume that hasn't been proven? What open loop does his "next physical action" depend on that he didn't name?
+- **Calvina**: what unverified claim is she making about the avatar's psychology or David's capacity? What does her NLP frame assume about how the customer thinks or behaves?
+- **Andrej** (if present): what does his technical solution assume about resources, data, or implementation time that hasn't been measured?
 
-NO --- dividers. NO ## headers. 150-300 words. Villain energy, not essay energy.`
+Do not spend all your time on one person. The room has multiple fatal assumptions running in parallel — name them all.
+
+End with the ONE red flag Tony must resolve before close — the single most fatal assumption across the whole room that if wrong, collapses everything else.
+
+NO --- dividers. NO ## headers. 200-350 words. Prosecutorial and precise — find the flaw in every argument, not just the obvious one.`
   },
   ...baseHistory,
   { role: "user", content: sessionState.userPrompt }
