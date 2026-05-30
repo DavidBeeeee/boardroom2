@@ -227,6 +227,14 @@ OUTPUT FORMAT — write Tony's message first (120-200 words, full personality, b
     .map(canonicalAdvisor)
     .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
 
+  // Fallback: if JSON parsing gave fewer advisors than Tony @-mentioned in his message,
+  // extract from @-mentions. This covers cases where the JSON block was malformed or cut off.
+  const mentionedInText = (["Russell", "Allen", "Calvina", "Andrej"] as AdvisorName[])
+    .filter(name => tonyMessage.includes(`@${name}`));
+  if (mentionedInText.length > selectedAdvisors.length) {
+    selectedAdvisors = mentionedInText;
+  }
+
   if (!selectedAdvisors.length) {
     selectedAdvisors = [input.mode.laneAdvisor];
   }

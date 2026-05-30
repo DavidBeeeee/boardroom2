@@ -237,11 +237,13 @@ export function BoardroomApp() {
         flushSync(() => {
           setTypingAdvisor(msg.speaker);
         });
+        scrollToBottomIfFollowing();
         const delay = Math.min(600 + msg.content.length * 0.8, 2200);
         await pause(delay);
         flushSync(() => setTypingAdvisor(null));
       }
       flushSync(() => setMessages(current => [...current, msg]));
+      scrollToBottomIfFollowing();
       await pause(80);
     }
   }
@@ -635,7 +637,7 @@ export function BoardroomApp() {
             <div className="flex min-w-0 flex-1 flex-col">
 
               {/* Messages */}
-              <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <div ref={scrollRef} onScroll={handleScroll} style={{ overflowAnchor: "none" }} className="relative min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {!messages.length && !typingAdvisor && !busy ? (
                   <div className="mx-auto mt-16 max-w-lg text-center">
                     <h3 className="font-serif text-3xl font-bold">Ask the room.</h3>
