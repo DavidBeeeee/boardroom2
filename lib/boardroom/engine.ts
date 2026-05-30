@@ -195,7 +195,7 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
 \`\`\``
       },
       ...baseHistory,
-      { role: "user", content: input.userPrompt }
+      { role: "user", content: "You are Tony. You just got David's answer. Call the team now — briefly acknowledge what you learned, tag the advisors, then output the JSON:" }
     ], input.clientApiKey);
 
     let routingData = fallbackRouting;
@@ -206,6 +206,8 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
     let routingMessage = codeIdx > 0
       ? rawRouting.slice(0, codeIdx).trim()
       : rawRouting.replace(/\{[\s\S]*\}/, "").trim();
+    // Strip any "Tony:" prefix the model may have added
+    routingMessage = routingMessage.replace(/^Tony:\s*/i, "").trim();
     if (!routingMessage || routingMessage.length < 10) {
       routingMessage = "Got it. Bringing in the team now.";
     }
@@ -548,7 +550,6 @@ export async function runTonyClose(input: {
   sessionState: SessionState;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
-  const baseHistory = historyMessages(input.history);
 
   // Tony writes his close as rich free-form markdown, then a small JSON block for cards only.
   // This prevents the JSON-breaking problem from long rich text in JSON strings.
@@ -579,6 +580,8 @@ YOUR CLOSE MUST:
 - Sound like a decisive COO who just ran a hard meeting, not a consultant writing a summary
 - NO --- dividers between sections. NO ## headers. Write in your voice, not report format.
 
+CRITICAL: Write ONLY Tony's closing synthesis. Do NOT reproduce the conversation above. Do NOT repeat Tony's intake message. Do NOT write as other advisors. Write ONLY Tony's close — the decision, the reconciliation, the action plan.
+
 FORMAT — write your full close first, then the cards JSON block:
 
 [Write Tony's full close here — 300-500 words. Use this structure naturally in your own voice:
@@ -592,8 +595,7 @@ THE CHECKPOINT: how David will know this worked]
 {"decision":"one clear decision sentence","actionCards":[{"title":"specific card title","advisor":"Russell","workType":"draft","context":"why this matters","desiredOutput":"what to create"}]}
 \`\`\``
   },
-  ...baseHistory,
-  { role: "user", content: sessionState.userPrompt }
+  { role: "user", content: "You are Tony. Write your closing synthesis now. Do not reproduce any prior messages. Start with THE CALL:" }
   ], input.clientApiKey);
 
   // Extract Tony's close message — everything before the ```json block
