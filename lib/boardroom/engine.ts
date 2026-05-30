@@ -466,7 +466,7 @@ Return JSON only:
 
 async function runAdvisorOneToOne(
   advisor: AdvisorName,
-  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content">[]; mode: ModeContext; clientApiKey?: string; }
+  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; }
 ) {
   const raw = await llm([
     {
