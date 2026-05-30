@@ -183,27 +183,28 @@ ${input.context}
 You are reading the CEO's message.
 
 ${isFollowUp
-  ? `CRITICAL: Your previous message asked a clarifying question. The CEO just answered it. You MUST choose path "route" now — do NOT ask another question. Take what you know and call the room. The conversation history has your question and their answer.`
-  : `Choose path:
-- "clarify": you need ONE more specific piece of info. Only clarify if genuinely unclear. Do NOT clarify on short affirmative messages like "yes", "let's go", "show me" — those are green lights, not questions.
-- "route": you have enough. Name who you're calling and the specific question for each.`
+  ? `CRITICAL: Your previous message asked a clarifying question. The CEO just answered it. You MUST use path "route" — NOT "clarify". Call the room now with what you know.`
+  : `DEFAULT: Use path "route". Give your read of the situation and call in the right advisors immediately.
+Only use "clarify" if you genuinely cannot pick a single advisor without one more piece of info — this should be rare. Business questions, life questions, launch questions, money questions — you always have enough to route.`
 }
 
-Advisor selection rules:
-- Andrej ONLY for genuine technical/AI/code questions. Leave him out otherwise.
-- Chanos is ALWAYS called separately — do NOT include him in selectedAdvisors.
-- "full table", "everyone", or "all advisors" = include Russell, Allen, Calvina (and Andrej if technical).
-- Short affirmative messages ("yes", "let's go", "show me", "do it") = the CEO confirmed. Route immediately using context from conversation history.
+Advisor selection — always pick at least one:
+- Business/money/launch/offer: Russell + Allen (always), Calvina if mindset is relevant
+- Life/identity/state: Calvina + Allen
+- Technical/code/AI/automation: Andrej + Russell
+- "everyone" / "full table" / "all advisors": Russell + Allen + Calvina (+ Andrej if technical)
+- Chanos is ALWAYS separate — NEVER include him in selectedAdvisors
+- Default if unclear: [mode.laneAdvisor] = "${input.mode.laneAdvisor}"
 
-Return JSON only:
+Return JSON only — selectedAdvisors must have at least one name:
 {
   "speaker": "Tony",
-  "path": "clarify|route",
-  "message": "Tony's message — his read and routing call. 100-180 words max. No ---. No ##.",
+  "path": "route",
+  "message": "Tony's read + who he's calling and the specific question for each. 100-180 words. No ---. No ##. Use bold and emojis.",
   "selectedAdvisors": ["Russell", "Allen"],
-  "advisorQuestions": { "Russell": "specific question", "Allen": "specific question" },
+  "advisorQuestions": { "Russell": "specific question for Russell", "Allen": "specific question for Allen" },
   "includeAndrej": false,
-  "tension": "one sentence naming the core tension"
+  "tension": "one sentence naming the core tension or unknown"
 }`
     },
     ...baseHistory,
@@ -216,12 +217,13 @@ Return JSON only:
     return { turns, sessionState: null, nextStage: "clarify" };
   }
 
-  const selectedAdvisors: AdvisorName[] = (intake.selectedAdvisors ?? [])
+  let selectedAdvisors: AdvisorName[] = (intake.selectedAdvisors ?? [])
     .map(canonicalAdvisor)
     .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
 
+  // Always have at least the lane advisor — never let an empty room happen
   if (!selectedAdvisors.length) {
-    return { turns, sessionState: null, nextStage: "done" };
+    selectedAdvisors = [input.mode.laneAdvisor];
   }
 
   const sessionState: SessionState = {

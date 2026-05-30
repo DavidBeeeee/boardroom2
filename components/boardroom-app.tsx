@@ -240,6 +240,18 @@ export function BoardroomApp() {
     }
   }
 
+  // Show a "who's coming next" indicator before each stage fires
+  function stageTypingLabel(stage: string, sessionState: unknown): string {
+    const ss = sessionState as { selectedAdvisors?: string[] } | null;
+    if (stage === "advisor_round") {
+      const advisors = ss?.selectedAdvisors ?? [];
+      return advisors.length ? advisors[0] : "Advisors";
+    }
+    if (stage === "chanos") return "Chanos";
+    if (stage === "tony_close") return "Tony";
+    return "Tony";
+  }
+
   // Run each debate stage sequentially, showing messages as they arrive
   async function runSessionStages({ conversationId: convId, nextStage, sessionState }: {
     conversationId: string;
@@ -250,6 +262,9 @@ export function BoardroomApp() {
     let currentState = sessionState;
 
     while (currentStage && currentStage !== "done") {
+      // Show who's coming before the API call even starts
+      flushSync(() => setTypingAdvisor(stageTypingLabel(currentStage, currentState)));
+
       try {
         const stagePayload = await api(`/api/workspaces/${workspaceId}/chat/stage`, {
           method: "POST",
@@ -262,12 +277,14 @@ export function BoardroomApp() {
           }),
         });
 
+        flushSync(() => setTypingAdvisor(null));
         await displayMessagesWithTyping(stagePayload.messages || []);
 
         currentStage = stagePayload.nextStage;
         currentState = stagePayload.sessionState;
 
       } catch (error) {
+        flushSync(() => setTypingAdvisor(null));
         const msg = error instanceof Error ? error.message : "Stage error.";
         showToast(`❌ ${msg}`);
         flushSync(() => setMessages(current => [...current, {
@@ -276,7 +293,7 @@ export function BoardroomApp() {
           conversation_id: convId,
           role: "system" as const,
           speaker: "System",
-          content: `⚠️ ${msg}`,
+          content: `⚠️ Stage failed (${currentStage}): ${msg}`,
           stage: "error",
           metadata: {},
           created_at: new Date().toISOString(),
