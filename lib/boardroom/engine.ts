@@ -112,7 +112,7 @@ function nextStageFor(state: SessionState, mode: ModeContext): StageResult["next
 function isFollowUpToClarification(history: Pick<Message, "role" | "speaker" | "content" | "stage">[]): boolean {
   const assistantMessages = history.filter(h => h.role === "assistant");
   const lastAssistant = assistantMessages.at(-1) as (typeof assistantMessages[0] & { stage?: string }) | undefined;
-  return lastAssistant?.stage === "tony_intake";
+  return lastAssistant?.stage === "tony_clarify";
 }
 
 export async function runTonyIntake(input: {
@@ -164,9 +164,86 @@ export async function runTonyIntake(input: {
     tension: "What's the real constraint?",
   };
 
-  // Tony writes ONE message that does everything:
-  // his read of the situation + tags each advisor + asks them a specific question.
-  // Then outputs a small JSON block for routing metadata.
+  // ── FOLLOW-UP PATH: Tony already asked a clarifying question, now route ────────
+  // Run a dedicated focused routing call — no long essay, just call the team + JSON.
+  if (isFollowUp) {
+    const rawRouting = await llm([
+      {
+        role: "system",
+        content: `${BOARDROOM_GUARDRAILS}
+
+${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
+${formatAdvisorVoiceContract("Tony", "intake")}
+
+${input.context}
+
+The CEO just answered your clarifying question. You now have enough to route.
+
+Write a SHORT message (60-100 words max) — acknowledge what you just learned, name exactly who you're calling in and the specific question for each. No long read of the situation — David just gave you the info. Just call the team.
+
+Advisor rules:
+- Business/money/launch: Russell + Allen always, Calvina if mindset/identity is relevant
+- Life/identity/emotions: Calvina + Allen
+- Technical/code/AI: Andrej + Russell
+- "everyone"/"full table": Russell + Allen + Calvina (+ Andrej if technical)
+- Chanos is ALWAYS separate — NEVER include him here
+
+OUTPUT FORMAT — brief Tony message first, then the JSON block:
+
+\`\`\`json
+{"selectedAdvisors":["Russell","Allen"],"advisorQuestions":{"Russell":"specific question","Allen":"specific question"},"tension":"one sentence naming the core tension"}
+\`\`\``
+      },
+      ...baseHistory,
+      { role: "user", content: input.userPrompt }
+    ], input.clientApiKey);
+
+    let routingData = fallbackRouting;
+    try { routingData = { ...fallbackRouting, ...parseJson<RoutingData>(rawRouting) }; }
+    catch { /* keep fallback */ }
+
+    const codeIdx = rawRouting.indexOf("```");
+    let routingMessage = codeIdx > 0
+      ? rawRouting.slice(0, codeIdx).trim()
+      : rawRouting.replace(/\{[\s\S]*\}/, "").trim();
+    if (!routingMessage || routingMessage.length < 10) {
+      routingMessage = "Got it. Bringing in the team now.";
+    }
+
+    const routingTurn: BoardroomTurn = { speaker: "Tony", stage: "tony_intake", content: routingMessage };
+
+    let selectedFromFollowUp: AdvisorName[] = (routingData.selectedAdvisors ?? [])
+      .map(canonicalAdvisor)
+      .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
+
+    const mentionedInRouting = (["Russell", "Allen", "Calvina", "Andrej"] as AdvisorName[])
+      .filter(name => routingMessage.includes(`@${name}`));
+    if (mentionedInRouting.length > selectedFromFollowUp.length) {
+      selectedFromFollowUp = mentionedInRouting;
+    }
+    if (!selectedFromFollowUp.length) selectedFromFollowUp = [input.mode.laneAdvisor];
+
+    const followUpState: SessionState = {
+      userPrompt: input.userPrompt,
+      tonyIntakeMessage: routingMessage,
+      selectedAdvisors: selectedFromFollowUp,
+      advisorQuestions: routingData.advisorQuestions ?? {},
+      tension: routingData.tension || "",
+      allTurns: [routingTurn],
+      currentRound: 0,
+      currentChanosRound: 0,
+    };
+
+    return {
+      turns: [routingTurn],
+      sessionState: followUpState,
+      nextStage: nextStageFor(followUpState, input.mode),
+    };
+  }
+
+  // ── INITIAL PATH: Tony decides — clarify or route ─────────────────────────────
+  // Tony can either ask ONE clarifying question (no JSON) or route immediately (with JSON).
+  // We detect which path he took by whether a ```json block appears in his response.
   const rawTonyResponse = await llm([
     {
       role: "system",
@@ -177,8 +254,13 @@ ${formatAdvisorVoiceContract("Tony", "intake")}
 
 ${input.context}
 
-${isFollowUp ? `The CEO just answered your question. Route now.` : ""}
+DECISION — do you have enough information to route this to the advisors right now?
 
+IF YOU NEED ONE PIECE OF INFORMATION FIRST:
+Write ONLY a direct question to David. Stay in full Tony voice. No advisor tags. No JSON block. One focused question that gets you what you need to route properly. Keep it under 150 words.
+(When David answers, you will call the team.)
+
+IF YOU HAVE ENOUGH TO ROUTE NOW:
 Write ONE message that does ALL of this:
 1. Give your honest, sharp read of the situation — name the real constraint or the real question underneath the question
 2. Name who you're bringing in and specifically WHY each person
@@ -196,7 +278,7 @@ Advisor rules:
 - Chanos is ALWAYS separate — NEVER include him here
 - Default if unclear: ${input.mode.laneAdvisor}
 
-OUTPUT FORMAT — write Tony's message first (120-200 words, full personality, bold, emojis, tag advisors with @Name), then the JSON block:
+If routing: write Tony's message first (120-200 words, full personality, bold, emojis, tag advisors with @Name), then the JSON block:
 
 \`\`\`json
 {"selectedAdvisors":["Russell","Allen"],"advisorQuestions":{"Russell":"specific question","Allen":"specific question"},"tension":"one sentence naming the core tension"}
@@ -206,6 +288,18 @@ OUTPUT FORMAT — write Tony's message first (120-200 words, full personality, b
     { role: "user", content: input.userPrompt }
   ], input.clientApiKey);
 
+  // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
+  const hasJsonBlock = rawTonyResponse.includes("```");
+  if (!hasJsonBlock) {
+    const clarifyMessage = rawTonyResponse.trim();
+    return {
+      turns: [{ speaker: "Tony", stage: "tony_clarify", content: clarifyMessage }],
+      sessionState: null,
+      nextStage: "clarify",
+    };
+  }
+
+  // ── ROUTE PATH: Tony included JSON, proceed as normal ────────────────────────
   // Extract routing JSON from the code block
   let routing = fallbackRouting;
   try { routing = { ...fallbackRouting, ...parseJson<RoutingData>(rawTonyResponse) }; }
