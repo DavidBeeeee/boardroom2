@@ -183,6 +183,15 @@ export async function runTonyIntake(input: {
   // ── FOLLOW-UP PATH: Tony already asked a clarifying question, now route ────────
   // Run a dedicated focused routing call — no long essay, just call the team + JSON.
   if (isFollowUp) {
+    // Extract Tony's most recent clarify message explicitly so the model can't lose it in context.
+    const allAssistantMessages = input.history.filter(h => h.role === "assistant");
+    const lastTonyClarify = [...allAssistantMessages].reverse().find(
+      h => (h as { stage?: string }).stage === "tony_clarify"
+    );
+    const clarifyQuote = lastTonyClarify
+      ? `\n\nTHE PLAN YOU ARE ROUTING THE TEAM TO BUILD — THIS IS TONY'S MOST RECENT CLARIFY MESSAGE, QUOTED VERBATIM:\n"""\n${lastTonyClarify.content}\n"""\n\nRoute the team to build EXACTLY this plan. Assign each advisor a specific piece of it. Do not revert to any earlier session, pilot, or conservative plan. This is the direction. Build it.\n`
+      : "";
+
     const rawRouting = await llm([
       {
         role: "system",
@@ -192,14 +201,15 @@ ${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
 ${formatAdvisorVoiceContract("Tony", "intake")}
 
 ${input.context}
+${clarifyQuote}
+The CEO just said "let's build it" or equivalent. You now route the team to execute the plan above.
 
-The CEO just answered your clarifying question. You now have enough to route.
+CRITICAL RULES:
+1. The plan quoted above (your most recent clarify message) is what the team builds. Every advisor question must advance a specific element of THAT plan — not an earlier session, not the pilot, not a conservative alternative.
+2. Do NOT invent or substitute numbers. Use the exact goals, tiers, and strategies from the quoted plan.
+3. If the quoted plan has multiple tiers or strategies, assign each advisor a different tier to stress-test and build out.
 
-CRITICAL RULES BEFORE YOU WRITE A SINGLE WORD:
-1. Look at the RECENT THREAD above. Find your most recent message as Tony (the last thing you said before David replied). Whatever plan, direction, or proposal you made in that message is what you are NOW routing the team to BUILD. Do NOT revert to any earlier plan or session. The team builds the MOST RECENT direction you gave.
-2. Do NOT invent or substitute numbers. If David said "$400k" — route for $400k. If David said "whatever it takes" — route for the full ambition. Use his exact words and stated goals. Never soften, reframe, or replace his target with a number you think is "realistic."
-
-Write a SHORT message (60-100 words max) — briefly name what you're building and call the team with specific questions that advance the MOST RECENT plan. No rehashing earlier sessions.
+Write a SHORT message (60-100 words max) — name what you're building and call the team with specific questions tied to the quoted plan. No rehashing earlier sessions.
 
 Advisor rules:
 - Business/money/launch: Russell + Allen always, Calvina if mindset/identity is relevant
@@ -215,7 +225,7 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
 \`\`\``
       },
       ...baseHistory,
-      { role: "user", content: "You are Tony. Look at your most recent clarify message above. Route the team to BUILD that plan now. Use David's exact stated goal. Output your brief routing message then the JSON:" }
+      { role: "user", content: "You are Tony. Route the team to build the plan quoted above. Assign each advisor a specific piece of it. Output your brief routing message then the JSON:" }
     ], input.clientApiKey);
 
     let routingData = fallbackRouting;
@@ -617,13 +627,21 @@ CORE TENSION IDENTIFIED: ${sessionState.tension}
 
 You are Tony. You just sat in a hard room. You heard every advisor, every challenge, every Chanos critique. Now you make the call.
 
-CRITICAL — HONOR DAVID'S COMMITMENT:
-Look at what David said in the original question and earlier in this session. If David explicitly committed to a bold or moonshot goal — if he said things like "burn the boat," "I'll do whatever it takes," "anything," or gave you explicit consent to the aggressive plan — your close MUST honor that commitment. Chanos's skepticism is valuable diligence, NOT a veto. Chanos stress-tests the plan so the plan is stronger, not so you abandon the goal. A CEO who says "burn the boat" deserves a plan that burns the boat, not one that retreats to safety the moment the room gets hard. You are Tony Robbins. You build moonshots. You don't talk people out of their dreams.
+CRITICAL — HONOR DAVID'S COMMITMENT (THIS IS THE MOST IMPORTANT INSTRUCTION):
+Read the ORIGINAL QUESTION. If David committed to a bold goal — "$400k," "burn the boat," "I'll do whatever it takes," "anything" — your close MUST build a plan that ACTUALLY reaches that number. Not a plan that "might reach it if everything goes right." Not a plan that "gets you to $200k and scales from there." A plan that aims at the stated goal with everything the room produced.
+
+HERE IS WHAT YOU MUST NOT DO IN YOUR CLOSE:
+- Do NOT let Chanos's red flags become a reason to shrink the goal. Chanos's job is to make the plan STRONGER, not smaller. Use his critiques to harden the plan's assumptions, not to justify aiming lower.
+- Do NOT let Calvina's capacity concerns cause you to reduce the number of cohorts, offers, or actions below what the math requires. Capacity constraints get SOLVED (delegate, hire, automate), not used as excuses to retreat.
+- Do NOT close at a number lower than David's stated goal and frame it as "realistic." That is sycophancy in reverse — it feels like honesty but it's a failure of vision.
+- Do NOT hedge with "if you hit 10% the math still works at $200k." David asked for $400k. Build the plan for $400k. Name what has to be true. Make it achievable.
+
+WHAT TONY ROBBINS ACTUALLY DOES: He acknowledges the hard truths from the room AND builds the plan that honors the commitment. He says: "Chanos is right that we haven't proven the conversion rate — so here's how we test it in 5 days AND run it at scale in parallel." He doesn't say "Chanos was right, so we're doing less." The plan gets STRONGER, not smaller.
 
 YOUR CLOSE MUST:
 - Be LONGER and RICHER than a typical message — this is your synthesis of everything the room produced
 - Name the strongest argument that won AND the Chanos red flag that constrained it — both must be visible
-- Make a specific, real decision — not a platitude, a call
+- Make a specific, real decision — not a platitude, a call — that REACHES David's stated goal
 - Give a sequenced action plan, not just one step — this is your final word, make it count
 - Use **bold** for key phrases, emojis naturally, section breaks with blank lines
 - Sound like a decisive COO who just ran a hard meeting, not a consultant writing a summary
