@@ -179,7 +179,11 @@ ${input.context}
 
 The CEO just answered your clarifying question. You now have enough to route.
 
-Write a SHORT message (60-100 words max) — acknowledge what you just learned, name exactly who you're calling in and the specific question for each. No long read of the situation — David just gave you the info. Just call the team.
+CRITICAL RULES BEFORE YOU WRITE A SINGLE WORD:
+1. Look at the RECENT THREAD above. Find your most recent message as Tony (the last thing you said before David replied). Whatever plan, direction, or proposal you made in that message is what you are NOW routing the team to BUILD. Do NOT revert to any earlier plan or session. The team builds the MOST RECENT direction you gave.
+2. Do NOT invent or substitute numbers. If David said "$400k" — route for $400k. If David said "whatever it takes" — route for the full ambition. Use his exact words and stated goals. Never soften, reframe, or replace his target with a number you think is "realistic."
+
+Write a SHORT message (60-100 words max) — briefly name what you're building and call the team with specific questions that advance the MOST RECENT plan. No rehashing earlier sessions.
 
 Advisor rules:
 - Business/money/launch: Russell + Allen always, Calvina if mindset/identity is relevant
@@ -195,7 +199,7 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
 \`\`\``
       },
       ...baseHistory,
-      { role: "user", content: "You are Tony. You just got David's answer. Call the team now — briefly acknowledge what you learned, tag the advisors, then output the JSON:" }
+      { role: "user", content: "You are Tony. Look at your most recent clarify message above. Route the team to BUILD that plan now. Use David's exact stated goal. Output your brief routing message then the JSON:" }
     ], input.clientApiKey);
 
     let routingData = fallbackRouting;
