@@ -115,6 +115,22 @@ function isFollowUpToClarification(history: Pick<Message, "role" | "speaker" | "
   return lastAssistant?.stage === "tony_clarify";
 }
 
+// Detect if the user has already explicitly committed to a bold goal in this conversation.
+// Looks for prior tony_close stages in history — meaning a full session already ran.
+// Also checks for strong commitment language in the recent user messages.
+function detectUserCommitment(history: Pick<Message, "role" | "speaker" | "content" | "stage">[], userPrompt: string): { hasCommitted: boolean; commitmentLevel: "bold" | "moonshot" | "none" } {
+  const hasPriorClose = history.some(h => (h as { stage?: string }).stage === "tony_close");
+  const recentUserMessages = history.filter(h => h.role === "user").slice(-4).map(h => h.content.toLowerCase());
+  const allRecent = [...recentUserMessages, userPrompt.toLowerCase()].join(" ");
+  const moonshotSignals = ["burn the boat", "whatever it takes", "i will do whatever", "moonshot", "do whatever you plan", "anything", "$400k", "400k"];
+  const boldSignals = ["let's go", "yes i'm willing", "uncomfortable", "i'm ready", "option c", "make it happen", "just do it"];
+  const isMoonshot = moonshotSignals.some(s => allRecent.includes(s));
+  const isBold = boldSignals.some(s => allRecent.includes(s));
+  if (hasPriorClose && (isMoonshot || isBold)) return { hasCommitted: true, commitmentLevel: isMoonshot ? "moonshot" : "bold" };
+  if (isMoonshot) return { hasCommitted: true, commitmentLevel: "moonshot" };
+  return { hasCommitted: false, commitmentLevel: "none" };
+}
+
 export async function runTonyIntake(input: {
   userPrompt: string;
   context: string;
@@ -250,6 +266,13 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
   // ── INITIAL PATH: Tony decides — clarify or route ─────────────────────────────
   // Tony can either ask ONE clarifying question (no JSON) or route immediately (with JSON).
   // We detect which path he took by whether a ```json block appears in his response.
+  // EXCEPTION: if the user has already committed to a bold/moonshot goal, Tony MUST route — no clarifying.
+  const commitment = detectUserCommitment(input.history, input.userPrompt);
+  const mustRoute = commitment.hasCommitted;
+  const commitmentInstruction = mustRoute
+    ? `\n\nCRITICAL OVERRIDE — DO NOT CLARIFY: David has already committed to his goal (${commitment.commitmentLevel} level). He has given explicit consent. DO NOT ask another clarifying question. You MUST route the team now with the full ambition he stated. Tony Robbins does not flinch when a CEO commits — he builds the plan.\n`
+    : "";
+
   const rawTonyResponse = await llm([
     {
       role: "system",
@@ -259,10 +282,10 @@ ${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
 ${formatAdvisorVoiceContract("Tony", "intake")}
 
 ${input.context}
-
+${commitmentInstruction}
 DECISION — do you have enough information to route this to the advisors right now?
 
-IF YOU NEED ONE PIECE OF INFORMATION FIRST:
+IF YOU NEED ONE PIECE OF INFORMATION FIRST (only if David has NOT already committed to a goal):
 Write ONLY a direct question to David. Stay in full Tony voice. No advisor tags. No JSON block. One focused question that gets you what you need to route properly. Keep it under 150 words.
 (When David answers, you will call the team.)
 
@@ -295,8 +318,27 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
   ], input.clientApiKey);
 
   // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
+  // If mustRoute is true, Tony should not clarify — force routing.
   const hasJsonBlock = rawTonyResponse.includes("```");
   if (!hasJsonBlock) {
+    if (mustRoute) {
+      // Tony failed to route despite the override — force a moonshot routing.
+      const forcedState: SessionState = {
+        userPrompt: input.userPrompt,
+        tonyIntakeMessage: rawTonyResponse.trim() || "David, you said the word. Full moonshot. Team, we're building the real plan — no safety nets 🔥",
+        selectedAdvisors: ["Russell", "Allen", "Calvina"],
+        advisorQuestions: {
+          Russell: "Build the complete moonshot revenue stack. Show all the math. David has committed to doing whatever it takes — no conservative assumptions.",
+          Allen: "Build the full 55-day execution sprint. David is all-in. What gets cut, delegated, accelerated? Daily non-negotiable that moves maximum revenue.",
+          Calvina: "David just committed to becoming a different person. Name the identity he steps into tonight — the version who closes big, asks for money, and doesn't flinch.",
+        },
+        tension: "Maximum ambition vs. unproven audience — David has committed, now we build the real plan.",
+        allTurns: [{ speaker: "Tony", stage: "tony_intake", content: rawTonyResponse.trim() || "Building the moonshot plan now. 🔥" }],
+        currentRound: 0,
+        currentChanosRound: 0,
+      };
+      return { turns: forcedState.allTurns, sessionState: forcedState, nextStage: nextStageFor(forcedState, input.mode) };
+    }
     const clarifyMessage = rawTonyResponse.trim();
     return {
       turns: [{ speaker: "Tony", stage: "tony_clarify", content: clarifyMessage }],
@@ -574,6 +616,9 @@ ${turnsToContext(sessionState.allTurns)}
 CORE TENSION IDENTIFIED: ${sessionState.tension}
 
 You are Tony. You just sat in a hard room. You heard every advisor, every challenge, every Chanos critique. Now you make the call.
+
+CRITICAL — HONOR DAVID'S COMMITMENT:
+Look at what David said in the original question and earlier in this session. If David explicitly committed to a bold or moonshot goal — if he said things like "burn the boat," "I'll do whatever it takes," "anything," or gave you explicit consent to the aggressive plan — your close MUST honor that commitment. Chanos's skepticism is valuable diligence, NOT a veto. Chanos stress-tests the plan so the plan is stronger, not so you abandon the goal. A CEO who says "burn the boat" deserves a plan that burns the boat, not one that retreats to safety the moment the room gets hard. You are Tony Robbins. You build moonshots. You don't talk people out of their dreams.
 
 YOUR CLOSE MUST:
 - Be LONGER and RICHER than a typical message — this is your synthesis of everything the room produced
