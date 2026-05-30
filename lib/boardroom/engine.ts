@@ -182,7 +182,11 @@ ${isFollowUp ? `The CEO just answered your question. Route now.` : ""}
 Write ONE message that does ALL of this:
 1. Give your honest, sharp read of the situation — name the real constraint or the real question underneath the question
 2. Name who you're bringing in and specifically WHY each person
-3. Ask each advisor a direct specific question — like you're tagging them in Slack: "@Russell — I need you to show me the math on..." "@Allen — what's the first 20-minute action that..." "@Calvina — what's the internal block that..."
+3. Ask each advisor a direct specific question — like you're tagging them in Slack:
+   - @Russell: math, offer structure, hooks, conversion mechanics
+   - @Allen: next physical action, open loops, what breaks at scale
+   - @Calvina: ALWAYS ask her TWO things — (1) what NLP language or frame should Russell use for THIS specific avatar/offer, and (2) what's the capacity constraint this plan puts on the CEO that we need to account for
+   - @Andrej: only for genuine technical questions
 
 Advisor rules:
 - Business/money/launch: Russell + Allen always, Calvina if mindset/identity is relevant

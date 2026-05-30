@@ -128,27 +128,11 @@ export function BoardroomApp() {
     if (sessionToken && workspaceId) void loadWorkspace(workspaceId);
   }, [sessionToken, workspaceId]);
 
-  function isAtBottom() {
-    const el = scrollRef.current;
-    if (!el) return true;
-    // Only scroll if within 5px of the absolute bottom — user must be actively following
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 5;
-  }
-
-  function scrollToBottomIfFollowing() {
-    if (isAtBottom()) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    }
-  }
-
   function forceScrollToBottom() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }
 
-  // Only auto-scroll on message changes, never on typingAdvisor changes
-  useEffect(() => {
-    scrollToBottomIfFollowing();
-  }, [messages]);
+  function scrollToBottomIfFollowing() { /* no-op — auto-scroll disabled */ }
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
 
