@@ -260,16 +260,20 @@ export async function runAdvisorRound(input: {
   const advisors = sessionState.selectedAdvisors;
   const baseHistory = historyMessages(input.history);
 
-  const fallback = { turns: advisors.map(a => ({ speaker: a, message: fallbackAdvisorTurn(a) })) };
+  const previousContext = sessionState.allTurns.length > 1
+    ? `PREVIOUS DISCUSSION:\n${turnsToContext(sessionState.allTurns.slice(1))}`
+    : "";
 
-  const payload = await structured<{ turns: { speaker: string; message: string }[] }>(
-    [{
-      role: "system",
-      content: `${BOARDROOM_GUARDRAILS}
+  // Run each advisor in parallel as plain text — no JSON, no parsing failures
+  const advisorResponses = await Promise.all(
+    advisors.map(async (advisor) => {
+      const message = await llm([
+        {
+          role: "system",
+          content: `${BOARDROOM_GUARDRAILS}
 
-ACTIVE ADVISORS: ${advisors.join(", ")}
-
-${advisors.map(a => `${formatAdvisorVoicePacket(a, `round_${round}`, mode)}\n${formatAdvisorVoiceContract(a, `round_${round}`)}`).join("\n\n---\n\n")}
+${formatAdvisorVoicePacket(advisor, `round_${round}`, mode)}
+${formatAdvisorVoiceContract(advisor, `round_${round}`)}
 
 ${input.context}
 
@@ -277,31 +281,27 @@ USER'S QUESTION: ${sessionState.userPrompt}
 
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
-${sessionState.allTurns.length > 1 ? `PREVIOUS DISCUSSION:\n${turnsToContext(sessionState.allTurns.slice(1))}` : ""}
+${previousContext}
 
-TONY'S QUESTIONS FOR THIS ${roundLabel.toUpperCase()} ROUND:
-${advisors.map(a => `${a}: ${sessionState.advisorQuestions[a] || "Give your full perspective from your lane."}`).join("\n")}
+TONY'S QUESTION FOR YOU: ${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}
 
-ROUND ${round} CONTRACT:
-- Each advisor responds at FULL intensity. No hedging.
-- Round 2+ advisors MUST directly respond to previous turns and Chanos's critique by name.
-- Agree only if you genuinely agree and say exactly why. Challenge everything else.
-- NO --- dividers. NO ## headers. This is Slack, not a report.
-- Each turn: 150-300 words max. Voice over volume.
+Write your response as ${advisor}. Plain text only — no JSON, no code blocks.
+${round > 1 ? "You heard the previous round including Chanos. Respond to what was said — agree, challenge, or build on it directly by name." : ""}
+150-300 words. Full personality. Bold key phrases. Emojis. No --- dividers. No ## headers.`
+        },
+        ...baseHistory,
+        { role: "user", content: sessionState.userPrompt }
+      ], input.clientApiKey);
 
-Return JSON only:
-{ "turns": [${advisors.map(a => `{"speaker":"${a}","message":"..."}`).join(",")}] }`
-    },
-    ...baseHistory,
-    { role: "user", content: sessionState.userPrompt }
-  ], input.clientApiKey, fallback);
+      return { advisor, message: message || fallbackAdvisorTurn(advisor) };
+    })
+  );
 
-  const turns: BoardroomTurn[] = [];
-  for (const t of (payload.turns ?? [])) {
-    const advisor = canonicalAdvisor(t.speaker);
-    if (advisor === "Tony" || advisor === "Chanos") continue;
-    turns.push({ speaker: advisor, stage: `advisor_round_${round}`, content: String(t.message || fallbackAdvisorTurn(advisor)) });
-  }
+  const turns: BoardroomTurn[] = advisorResponses.map(({ advisor, message }) => ({
+    speaker: advisor,
+    stage: `advisor_round_${round}`,
+    content: message,
+  }));
 
   const newState: SessionState = {
     ...sessionState,
