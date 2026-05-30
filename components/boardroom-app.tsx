@@ -103,6 +103,8 @@ export function BoardroomApp() {
   const [activeCardId, setActiveCardId] = useState("");
   const [tab, setTab] = useState<"chat" | "docs" | "settings">("chat");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [autoScroll, setAutoScroll] = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const toastId = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -128,11 +130,27 @@ export function BoardroomApp() {
     if (sessionToken && workspaceId) void loadWorkspace(workspaceId);
   }, [sessionToken, workspaceId]);
 
-  function forceScrollToBottom() {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  // Track whether user is at the bottom — show indicator if not
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setShowScrollBtn(!atBottom);
   }
 
-  function scrollToBottomIfFollowing() { /* no-op — auto-scroll disabled */ }
+  function scrollToBottom() {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    setShowScrollBtn(false);
+  }
+
+  // Only auto-scroll if the toggle is on
+  function scrollToBottomIfFollowing() {
+    if (autoScroll) scrollToBottom();
+  }
+
+  function forceScrollToBottom() {
+    if (autoScroll) scrollToBottom();
+  }
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
 
@@ -621,7 +639,7 @@ export function BoardroomApp() {
             <div className="flex min-w-0 flex-1 flex-col">
 
               {/* Messages */}
-              <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {!messages.length && !typingAdvisor && !busy ? (
                   <div className="mx-auto mt-16 max-w-lg text-center">
                     <h3 className="font-serif text-3xl font-bold">Ask the room.</h3>
@@ -712,6 +730,18 @@ export function BoardroomApp() {
                   </div>
                 )}
               </div>
+
+              {/* Scroll to bottom indicator */}
+              {showScrollBtn && (
+                <div className="sticky bottom-2 flex justify-center pointer-events-none">
+                  <button
+                    onClick={scrollToBottom}
+                    className="pointer-events-auto flex items-center gap-1.5 bg-ink text-white text-xs px-3 py-1.5 shadow-lg opacity-90 hover:opacity-100 transition-opacity"
+                  >
+                    ↓ New messages
+                  </button>
+                </div>
+              )}
 
               {/* Composer */}
               <div className="border-t border-stone-300 bg-white">
@@ -851,6 +881,18 @@ export function BoardroomApp() {
         {/* Settings tab */}
         {tab === "settings" ? (
           <div className="max-w-xl p-5 space-y-4">
+            <div className="border border-stone-300 bg-white p-4">
+              <h3 className="mb-3 font-serif text-lg font-bold">Scroll</h3>
+              <label className="flex cursor-pointer items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold">Auto-scroll</div>
+                  <div className="text-xs text-stone-500">Scroll to new messages as they arrive (off by default)</div>
+                </div>
+                <div onClick={() => setAutoScroll(v => !v)} className={`relative h-5 w-9 rounded-full transition-colors duration-200 ${autoScroll ? "bg-teal" : "bg-stone-300"}`}>
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${autoScroll ? "translate-x-4" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+            </div>
             <div className="border border-stone-300 bg-white p-4">
               <h3 className="mb-1 flex items-center gap-2 font-serif text-lg font-bold"><Briefcase size={16} /> Workspace</h3>
               <p className="text-xs text-stone-500 mb-3">{bundle?.workspace.name} · {bundle?.workspace.slug}</p>
