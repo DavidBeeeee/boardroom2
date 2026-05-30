@@ -364,7 +364,6 @@ export async function runAdvisorRound(input: {
   const round = sessionState.currentRound + 1;
   const roundLabel = round === 1 ? "first" : round === 2 ? "second" : "third";
   const advisors = sessionState.selectedAdvisors;
-  const baseHistory = historyMessages(input.history);
 
   const previousContext = sessionState.allTurns.length > 1
     ? `PREVIOUS DISCUSSION:\n${turnsToContext(sessionState.allTurns.slice(1))}`
@@ -424,11 +423,12 @@ STEP 2 — ADVANCE THE ROOM: After addressing Chanos, engage with at least one o
 If your first sentence resembles anything in your previous turns above, DELETE IT and find a different angle.`
 }
 
-Write as ${advisor}. Plain text only — no JSON, no code blocks.
+CRITICAL: Write ONLY your own response as ${advisor}. Do NOT reproduce the conversation above. Do NOT write as other advisors. Do NOT output a transcript. Write ONLY what ${advisor} says next.
+
+Plain text only — no JSON, no code blocks.
 150-300 words. Full personality. Bold key phrases. Emojis. No --- dividers. No ## headers.`
         },
-        ...baseHistory,
-        { role: "user", content: sessionState.userPrompt }
+        { role: "user", content: `You are ${advisor}. Respond now in ${advisor}'s voice only. Do not reproduce the conversation history. Write your response:` }
       ], input.clientApiKey);
 
       return { advisor, message: message || fallbackAdvisorTurn(advisor) };
@@ -467,7 +467,6 @@ export async function runChanosRound(input: {
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
   const round = sessionState.currentChanosRound + 1;
-  const baseHistory = historyMessages(input.history);
 
   // Get the most recent advisor round turns — this is what Chanos is critiquing
   const latestAdvisorRound = sessionState.allTurns.filter(
@@ -515,10 +514,11 @@ Do not spend all your time on one person. The room has multiple fatal assumption
 
 End with the ONE red flag Tony must resolve before close — the single most fatal assumption across the whole room that if wrong, collapses everything else.
 
+CRITICAL: Write ONLY Chanos's response. Do NOT reproduce the conversation above. Do NOT write as other advisors. Do NOT output a transcript. Write ONLY what Chanos says next.
+
 NO --- dividers. NO ## headers. 200-350 words. Prosecutorial and precise — find the flaw in every argument, not just the obvious one.`
   },
-  ...baseHistory,
-  { role: "user", content: sessionState.userPrompt }
+  { role: "user", content: "You are Chanos. Short the advisors now. Write only Chanos's response:" }
   ], input.clientApiKey);
 
   const turn: BoardroomTurn = { speaker: "Chanos", stage: `chanos_round_${round}`, content: raw };

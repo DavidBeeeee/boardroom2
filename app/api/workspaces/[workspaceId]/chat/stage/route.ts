@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     authed.supabase.from("workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
     authed.supabase.from("documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
     authed.supabase.from("memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(30),
+    authed.supabase.from("messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
   ]);
 
   const contextText = buildBoardroomContext({
