@@ -38,12 +38,21 @@ const ADVISOR_META: Record<string, { role: string; dot: string }> = {
   Calvina: { role: "NLP / WILD Coach", dot: "bg-pink-400" },
 };
 
-function stageColor(stage: string): string {
-  if (stage === "tony_intake" || stage === "tony_only") return "border-l-4 border-l-teal";
-  if (stage === "tony_close") return "border-l-4 border-l-gold";
-  if (stage.startsWith("chanos_round")) return "border-l-4 border-l-coral";
-  if (stage.startsWith("advisor_round")) return "border-stone-300";
-  if (stage === "advisor_one_to_one") return "border-stone-300";
+const ADVISOR_BORDER: Record<string, string> = {
+  Tony:    "border-l-4 border-l-teal",
+  Russell: "border-l-4 border-l-amber-400",
+  Allen:   "border-l-4 border-l-blue-400",
+  Chanos:  "border-l-4 border-l-coral",
+  Andrej:  "border-l-4 border-l-violet-400",
+  Calvina: "border-l-4 border-l-pink-400",
+};
+
+function stageColor(stage: string, speaker?: string): string {
+  if (stage === "tony_intake" || stage === "tony_only" || stage === "tony_close") return ADVISOR_BORDER["Tony"];
+  if (stage.startsWith("chanos_round")) return ADVISOR_BORDER["Chanos"];
+  if ((stage.startsWith("advisor_round") || stage === "advisor_one_to_one") && speaker) {
+    return ADVISOR_BORDER[speaker] || "border-stone-300";
+  }
   return "border-stone-300";
 }
 
@@ -91,6 +100,8 @@ export function BoardroomApp() {
   const [bundle, setBundle] = useState<WorkspaceBundle | null>(null);
   const [conversationId, setConversationId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
+  // Per-channel conversation IDs so 1:1 rooms don't bleed into the boardroom
+  const [channelConvIds, setChannelConvIds] = useState<Record<string, string>>({});
 
   // Chat UI
   const [channel, setChannel] = useState<(typeof CHANNELS)[number]>("brainstorming");
@@ -197,8 +208,12 @@ export function BoardroomApp() {
     try {
       const payload = await api(`/api/workspaces/${id}`);
       setBundle(payload);
-      setConversationId(payload.conversations?.[0]?.id || "");
-      if (payload.conversations?.[0]?.id) await loadConversation(id, payload.conversations[0].id);
+      const firstConvId = payload.conversations?.[0]?.id || "";
+      setConversationId(firstConvId);
+      if (firstConvId) {
+        setChannelConvIds(prev => ({ ...prev, brainstorming: firstConvId }));
+        await loadConversation(id, firstConvId);
+      }
       else setMessages([]);
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Could not load workspace.");
@@ -363,9 +378,10 @@ export function BoardroomApp() {
         })
       });
 
-      // Update conversationId if new conversation was created
+      // Update conversationId if new conversation was created, and save per-channel
       if (payload.conversationId && payload.conversationId !== conversationId) {
         setConversationId(payload.conversationId);
+        setChannelConvIds(prev => ({ ...prev, [sendChannel]: payload.conversationId }));
       }
 
       // Replace pending message with real one from DB
@@ -562,7 +578,14 @@ export function BoardroomApp() {
           <div className="mb-2 px-3 text-xs font-semibold uppercase tracking-widest text-white/30">Channels</div>
           <button
             className={`mb-1 w-full px-3 py-2 text-left text-sm transition-colors ${channel === "brainstorming" && tab === "chat" ? "bg-teal text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
-            onClick={() => { setChannel("brainstorming"); setTab("chat"); }}
+            onClick={() => {
+              const savedId = channelConvIds["brainstorming"] || "";
+              setChannel("brainstorming");
+              setTab("chat");
+              setConversationId(savedId);
+              setMessages([]);
+              if (workspaceId && savedId) loadConversation(workspaceId, savedId);
+            }}
           >
             # Boardroom
           </button>
@@ -575,7 +598,15 @@ export function BoardroomApp() {
               <button
                 key={name}
                 className={`mb-0.5 flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${channel === name && tab === "chat" ? "bg-teal text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
-                onClick={() => { setChannel(name); setTab("chat"); setActiveCardId(""); }}
+                onClick={() => {
+                  const savedId = channelConvIds[name] || "";
+                  setChannel(name);
+                  setTab("chat");
+                  setActiveCardId("");
+                  setConversationId(savedId);
+                  setMessages([]);
+                  if (workspaceId && savedId) loadConversation(workspaceId, savedId);
+                }}
               >
                 <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />
                 <span>{name}</span>
@@ -672,7 +703,7 @@ export function BoardroomApp() {
                         {message.content}
                       </div>
                     ) : (
-                      <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageColor(message.stage)}`}>
+                      <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageColor(message.stage, message.speaker)}`}>
                         <div className="mb-1 flex items-center gap-2">
                           {ADVISOR_META[message.speaker] && (
                             <span className={`h-2 w-2 rounded-full ${ADVISOR_META[message.speaker].dot}`} />
