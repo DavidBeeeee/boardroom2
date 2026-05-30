@@ -152,18 +152,21 @@ export async function runTonyIntake(input: {
     };
   }
 
-  const fallback = {
-    speaker: "Tony" as const,
-    path: "route" as const,
-    message: "David, I have the signal. Let me bring the right people in.",
-    selectedAdvisors: [input.mode.laneAdvisor] as AdvisorName[],
-    advisorQuestions: {} as Record<string, string>,
-    includeAndrej: false,
+  type RoutingData = {
+    selectedAdvisors: AdvisorName[];
+    advisorQuestions: Record<string, string>;
+    tension: string;
+  };
+
+  const fallbackRouting: RoutingData = {
+    selectedAdvisors: [input.mode.laneAdvisor],
+    advisorQuestions: {},
     tension: "What's the real constraint?",
   };
 
-  // Tony writes his message as plain text, then a JSON code block for routing.
-  // parseJson already extracts content from ```json blocks, so this is robust.
+  // Tony writes ONE message that does everything:
+  // his read of the situation + tags each advisor + asks them a specific question.
+  // Then outputs a small JSON block for routing metadata.
   const rawTonyResponse = await llm([
     {
       role: "system",
@@ -174,69 +177,62 @@ ${formatAdvisorVoiceContract("Tony", "intake")}
 
 ${input.context}
 
-${isFollowUp
-  ? `CRITICAL: The CEO just answered your clarifying question. Route immediately — no more questions.`
-  : `Route immediately. Give your honest read of the situation and call in the right advisors.`
-}
+${isFollowUp ? `The CEO just answered your question. Route now.` : ""}
+
+Write ONE message that does ALL of this:
+1. Give your honest, sharp read of the situation — name the real constraint or the real question underneath the question
+2. Name who you're bringing in and specifically WHY each person
+3. Ask each advisor a direct specific question — like you're tagging them in Slack: "@Russell — I need you to show me the math on..." "@Allen — what's the first 20-minute action that..." "@Calvina — what's the internal block that..."
 
 Advisor rules:
-- Business/money/launch/offers: Russell + Allen (always), add Calvina if mindset matters
+- Business/money/launch: Russell + Allen always, Calvina if mindset/identity is relevant
 - Life/identity/emotions: Calvina + Allen
 - Technical/code/AI: Andrej + Russell
-- "everyone"/"full table"/"all advisors": Russell + Allen + Calvina (+ Andrej if technical)
-- Chanos is ALWAYS separate — NEVER put him in selectedAdvisors
-- If uncertain, default to: ["${input.mode.laneAdvisor}"]
+- "everyone"/"full table": Russell + Allen + Calvina (+ Andrej if technical)
+- Chanos is ALWAYS separate — NEVER include him here
+- Default if unclear: ${input.mode.laneAdvisor}
 
-OUTPUT FORMAT — follow exactly:
-
-[Write Tony's message here — 100-180 words, full personality, bold and emojis, speak directly to David]
+OUTPUT FORMAT — write Tony's message first (120-200 words, full personality, bold, emojis, tag advisors with @Name), then the JSON block:
 
 \`\`\`json
-{"path":"route","selectedAdvisors":["Russell","Allen"],"advisorQuestions":{"Russell":"specific question","Allen":"specific question"},"tension":"one sentence"}
+{"selectedAdvisors":["Russell","Allen"],"advisorQuestions":{"Russell":"specific question","Allen":"specific question"},"tension":"one sentence naming the core tension"}
 \`\`\``
     },
     ...baseHistory,
     { role: "user", content: input.userPrompt }
   ], input.clientApiKey);
 
-  // Extract JSON from the code block — parseJson handles ```json blocks
-  let routing = fallback;
-  try { routing = { ...fallback, ...parseJson<typeof fallback>(rawTonyResponse) }; }
-  catch { /* keep fallback routing */ }
+  // Extract routing JSON from the code block
+  let routing = fallbackRouting;
+  try { routing = { ...fallbackRouting, ...parseJson<RoutingData>(rawTonyResponse) }; }
+  catch { /* keep fallback */ }
 
   // Extract Tony's message = everything before the first ```
   const codeBlockIdx = rawTonyResponse.indexOf("```");
   let tonyMessage = codeBlockIdx > 0
     ? rawTonyResponse.slice(0, codeBlockIdx).trim()
-    : rawTonyResponse.replace(/\{[\s\S]*\}/, "").trim(); // fallback: strip any inline JSON
+    : rawTonyResponse.replace(/\{[\s\S]*\}/, "").trim();
 
   if (!tonyMessage || tonyMessage.length < 20) {
-    tonyMessage = fallback.message;
+    tonyMessage = "David, I have the signal. Let me bring the right people in.";
   }
 
-  const intake = { ...routing, message: tonyMessage };
+  const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: tonyMessage }];
 
-  const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: intake.message }];
-
-  if (intake.path === "clarify") {
-    return { turns, sessionState: null, nextStage: "clarify" };
-  }
-
-  let selectedAdvisors: AdvisorName[] = (intake.selectedAdvisors ?? [])
+  let selectedAdvisors: AdvisorName[] = (routing.selectedAdvisors ?? [])
     .map(canonicalAdvisor)
     .filter((a): a is AdvisorName => a !== "Tony" && a !== "Chanos");
 
-  // Always have at least the lane advisor — never let an empty room happen
   if (!selectedAdvisors.length) {
     selectedAdvisors = [input.mode.laneAdvisor];
   }
 
   const sessionState: SessionState = {
     userPrompt: input.userPrompt,
-    tonyIntakeMessage: intake.message,
+    tonyIntakeMessage: tonyMessage,
     selectedAdvisors,
-    advisorQuestions: intake.advisorQuestions ?? {},
-    tension: intake.tension || "",
+    advisorQuestions: routing.advisorQuestions ?? {},
+    tension: routing.tension || "",
     allTurns: turns,
     currentRound: 0,
     currentChanosRound: 0,
