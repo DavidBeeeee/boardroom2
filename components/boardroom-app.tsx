@@ -128,21 +128,27 @@ export function BoardroomApp() {
     if (sessionToken && workspaceId) void loadWorkspace(workspaceId);
   }, [sessionToken, workspaceId]);
 
-  function isNearBottom() {
+  function isAtBottom() {
     const el = scrollRef.current;
     if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    // Only scroll if within 5px of the absolute bottom — user must be actively following
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 5;
   }
 
-  function scrollToBottom() {
-    if (isNearBottom()) {
+  function scrollToBottomIfFollowing() {
+    if (isAtBottom()) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }
   }
 
+  function forceScrollToBottom() {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }
+
+  // Only auto-scroll on message changes, never on typingAdvisor changes
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, typingAdvisor]);
+    scrollToBottomIfFollowing();
+  }, [messages]);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
 
@@ -229,7 +235,7 @@ export function BoardroomApp() {
         flushSync(() => {
           setTypingAdvisor(msg.speaker);
         });
-        scrollToBottom();
+        scrollToBottomIfFollowing();
         const delay = Math.min(600 + msg.content.length * 0.8, 2200);
         await pause(delay);
         flushSync(() => setTypingAdvisor(null));
@@ -326,6 +332,10 @@ export function BoardroomApp() {
       setBusy(true);
       setComposer("");
       setTypingAdvisor("Tony");
+    });
+    // Force scroll when user sends — they want to see the response
+    forceScrollToBottom();
+    flushSync(() => {
       setMessages(current => [...current, {
         id: pendingId,
         workspace_id: workspaceId,
