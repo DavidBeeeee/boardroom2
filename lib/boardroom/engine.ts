@@ -280,6 +280,16 @@ export async function runAdvisorRound(input: {
   const advisorResponses = await Promise.all(
     advisors.map(async (advisor) => {
       const isRound1 = round === 1;
+
+      // Extract this specific advisor's previous turns so we can show them exactly
+      // what they said before — making repetition impossible to miss
+      const myPreviousTurns = sessionState.allTurns.filter(
+        t => t.speaker === advisor && t.stage.startsWith("advisor_round_")
+      );
+      const myPreviousContent = myPreviousTurns.length
+        ? `YOUR PREVIOUS TURNS IN THIS SESSION (DO NOT REPEAT ANY OF THIS):\n${myPreviousTurns.map((t, i) => `[Round ${i + 1}]: ${t.content.slice(0, 400)}...`).join("\n\n")}`
+        : "";
+
       const message = await llm([
         {
           role: "system",
@@ -297,16 +307,21 @@ ${isRound1
   ? `TONY'S QUESTION FOR YOU: ${sessionState.advisorQuestions[advisor] || "Give your full perspective from your lane."}\n\nAnswer from your lane. This is round 1 — give your best take on the situation.`
   : `${lastRoundContext}
 
-YOUR TASK FOR ROUND ${round}:
-You are NOT re-answering the original question. You are responding to what was just said in round ${round - 1} above.
+${myPreviousContent}
 
-- What specifically do you AGREE with from the last round, and why?
-- What specifically do you CHALLENGE or think is WRONG, and why?
-- What NEW angle, number, or move can you add that NOBODY has named yet?
+YOUR TASK FOR ROUND ${round} — READ THIS CAREFULLY:
+You are NOT re-answering the original question.
+You are NOT repeating anything from your previous turns above.
+You ARE responding specifically to what was just said in round ${round - 1}.
 
-If you find yourself saying the same thing as your previous round, STOP and find the new insight. The room has already heard your round 1 position. What changed? What did Chanos or another advisor say that forces you to revise, sharpen, or fight back?
+Ask yourself: what did Chanos, Russell, Allen, or Calvina say in that last round that:
+- You can build on with something NEW they missed?
+- You directly disagree with and can refute with a specific argument?
+- Changes or sharpens your previous position?
 
-Name the other advisors by name when you respond to them.`
+If your first sentence resembles anything in your previous turns above, DELETE IT and find a different angle. The room has already heard those words from you. Give them something they haven't heard yet.
+
+Name other advisors by name when responding to them.`
 }
 
 Write as ${advisor}. Plain text only — no JSON, no code blocks.
@@ -359,8 +374,16 @@ export async function runChanosRound(input: {
     t => t.stage === `advisor_round_${round}`
   );
   const latestAdvisorContext = latestAdvisorRound.length
-    ? `WHAT THE ADVISORS JUST SAID IN ROUND ${round} — THIS IS WHAT YOU ARE SHORTING:\n${turnsToContext(latestAdvisorRound)}`
+    ? `WHAT THE ADVISORS JUST SAID IN ROUND ${round} — SHORT THESE SPECIFIC ARGUMENTS:\n${turnsToContext(latestAdvisorRound)}`
     : `DISCUSSION SO FAR:\n${turnsToContext(sessionState.allTurns.slice(1))}`;
+
+  // Show Chanos his own previous critiques so he can't repeat them
+  const myPreviousCritiques = sessionState.allTurns.filter(
+    t => t.speaker === "Chanos" && t.stage.startsWith("chanos_round_")
+  );
+  const chanosPreviousContent = myPreviousCritiques.length
+    ? `YOUR PREVIOUS CRITIQUES (DO NOT REPEAT — find NEW fatal assumptions):\n${myPreviousCritiques.map((t, i) => `[Chanos Round ${i + 1}]: ${t.content.slice(0, 400)}...`).join("\n\n")}`
+    : "";
 
   const raw = await llm([{
     role: "system",
@@ -376,15 +399,17 @@ TONY'S READ: ${sessionState.tonyIntakeMessage}
 
 ${latestAdvisorContext}
 
-You are Chanos. Your job is to SHORT THE ADVISORS' ARGUMENTS FROM ROUND ${round} ABOVE — not to respond to the original question again.
+${chanosPreviousContent}
 
-${round > 1 ? `You already made your round ${round - 1} critique. Do NOT repeat it. Find the NEW fatal assumption in what the advisors just said in round ${round}.` : ""}
+You are Chanos. SHORT THE ADVISORS' NEW ARGUMENTS FROM ROUND ${round} ABOVE.
+
+${round > 1 ? `Your previous critiques are shown above. Do NOT repeat them. The advisors have pivoted — find the NEW fatal assumption in their LATEST arguments, not their earlier ones.` : ""}
 
 Structure:
-1. Name the specific thing an advisor just said that you're shorting (quote them by name)
-2. Find the fatal assumption in their NEW argument
-3. Audit the specific math or claim they just made
-4. Name the ONE red flag Tony must resolve before the close
+1. Quote the specific advisor and the specific NEW claim you're shorting
+2. Name the fatal assumption hidden inside that new claim
+3. Audit the specific math or logic — show the exact number or reasoning that breaks
+4. Name the ONE new red flag Tony must resolve before close
 
 NO --- dividers. NO ## headers. 150-300 words. Villain energy, not essay energy.`
   },
