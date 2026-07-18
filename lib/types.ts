@@ -11,6 +11,22 @@ export type Workspace = {
   created_at: string;
 };
 
+export type BoardroomProfile = {
+  workspace_id: string;
+  preferred_name: string;
+  role_title: string;
+  business_name: string;
+  business_description: string;
+  ideal_customer: string;
+  offers: string;
+  current_goals: string;
+  constraints: string;
+  additional_context: string;
+  onboarding_complete: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DocumentRecord = {
   id: string;
   workspace_id: string;

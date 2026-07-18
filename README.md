@@ -24,6 +24,8 @@ Studio controls access through the `app_entitlements` table. Grant the `boardroo
 
 When an entitled user opens Boardroom for the first time, `boardroom_ensure_workspace` creates their private workspace and membership automatically. Revoking the entitlement blocks Boardroom immediately without deleting their saved work.
 
+The same first visit creates a private Boardroom profile. The user completes the profile before entering the app and can edit it later from My Profile. The profile is included as verified context in every group and 1:1 conversation.
+
 The SQL files in this repository's `supabase` folder describe the original standalone setup and are retained only as historical reference. Do not apply them to Studio.
 
 ## DeepSeek key strategy

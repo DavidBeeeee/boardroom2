@@ -29,6 +29,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   return NextResponse.json({
     cleared: ["messages", "conversations", "advisor_cards", "memory_entries"],
-    preserved: ["documents", "workspace_settings", "workspace_members"]
+    preserved: ["profile", "documents", "workspace_settings", "workspace_members"]
   });
 }
