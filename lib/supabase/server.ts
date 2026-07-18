@@ -39,7 +39,7 @@ export function createServiceSupabase() {
 
 export async function ensureWorkspaceMember(supabase: SupabaseClient, workspaceId: string) {
   const { data, error } = await supabase
-    .from("workspace_members")
+    .from("boardroom_workspace_members")
     .select("workspace_id")
     .eq("workspace_id", workspaceId)
     .maybeSingle();

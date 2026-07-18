@@ -12,18 +12,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
   }
 
-  const [messages, conversations, cards, memory] = await Promise.all([
-    authed.supabase.from("messages").delete().eq("workspace_id", workspaceId),
-    authed.supabase.from("conversations").delete().eq("workspace_id", workspaceId),
-    authed.supabase.from("advisor_cards").delete().eq("workspace_id", workspaceId),
-    authed.supabase.from("memory_entries").delete().eq("workspace_id", workspaceId)
-  ]);
-  const error = messages.error || conversations.error || cards.error || memory.error;
-  if (error) return jsonError(error.message, 500);
+  for (const table of [
+    "boardroom_messages",
+    "boardroom_advisor_cards",
+    "boardroom_memory_entries",
+    "boardroom_conversations"
+  ]) {
+    const { error } = await authed.supabase.from(table).delete().eq("workspace_id", workspaceId);
+    if (error) return jsonError(error.message, 500);
+  }
 
   await authed.supabase
-    .from("workspace_settings")
-    .update({ fresh_start_count: 1 })
+    .from("boardroom_workspace_settings")
+    .update({ fresh_start_count: (await authed.supabase.from("boardroom_workspace_settings").select("fresh_start_count").eq("workspace_id", workspaceId).single()).data?.fresh_start_count + 1 || 1 })
     .eq("workspace_id", workspaceId);
 
   return NextResponse.json({

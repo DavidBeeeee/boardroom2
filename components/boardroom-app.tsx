@@ -9,8 +9,9 @@ import {
   CheckCircle2,
   ClipboardCopy,
   FileText,
-  KeyRound,
+  Home,
   LogOut,
+  Menu,
   MessageSquare,
   RefreshCcw,
   Send,
@@ -22,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase/client";
+import { boardroomPath } from "@/lib/boardroom/path";
 import type { AdvisorCard, Conversation, DocumentRecord, Message, ModeContext, Workspace } from "@/lib/types";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -88,11 +90,10 @@ export function BoardroomApp() {
   const supabase = useMemo(() => createBrowserSupabase(), []);
 
   // Auth
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [sessionToken, setSessionToken] = useState("");
-  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
-  const [authError, setAuthError] = useState("");
+  const [accessError, setAccessError] = useState("");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Workspace
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -112,7 +113,7 @@ export function BoardroomApp() {
   const [tonyOnly, setTonyOnly] = useState(false);
   const [typingAdvisor, setTypingAdvisor] = useState<string | null>(null);
   const [activeCardId, setActiveCardId] = useState("");
-  const [tab, setTab] = useState<"chat" | "docs" | "settings">("chat");
+  const [tab, setTab] = useState<"chat" | "cards" | "docs" | "settings">("chat");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [autoScroll, setAutoScroll] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -122,6 +123,9 @@ export function BoardroomApp() {
   // ── Auth & Load ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    const storedTheme = localStorage.getItem("sis_theme_v1") === "dark" ? "dark" : "light";
+    setTheme(storedTheme);
+    document.documentElement.classList.toggle("dark", storedTheme === "dark");
     setClientKey(sessionStorage.getItem(SESSION_KEY) || "");
     supabase.auth.getSession().then(({ data }) => {
       const token = data.session?.access_token || "";
@@ -131,7 +135,8 @@ export function BoardroomApp() {
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       const token = session?.access_token || "";
       setSessionToken(token);
-      if (token) void loadWorkspaces(token);
+      setAccessError("");
+      if (token) setTimeout(() => void loadWorkspaces(token), 0);
       else { setWorkspaces([]); setBundle(null); setMessages([]); }
     });
     return () => data.subscription.unsubscribe();
@@ -187,7 +192,7 @@ export function BoardroomApp() {
     if (init.headers && !(init.headers instanceof Headers) && !Array.isArray(init.headers)) {
       Object.assign(requestHeaders, init.headers);
     }
-    const res = await fetch(path, { ...init, headers: requestHeaders });
+    const res = await fetch(boardroomPath(path), { ...init, headers: requestHeaders });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(payload.error || `Request failed: ${res.status}`);
     return payload;
@@ -197,9 +202,14 @@ export function BoardroomApp() {
 
   async function loadWorkspaces(token = sessionToken) {
     if (!token) return;
-    const res = await fetch("/api/workspaces", { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(boardroomPath("/api/workspaces"), { headers: { Authorization: `Bearer ${token}` } });
     const payload = await res.json();
-    if (!res.ok) { showToast(payload.error || "Could not load workspaces."); return; }
+    if (!res.ok) {
+      const message = payload.error || "Could not load your Boardroom.";
+      setAccessError(message);
+      return;
+    }
+    setAccessError("");
     setWorkspaces(payload.workspaces || []);
     if (!workspaceId && payload.workspaces?.[0]) setWorkspaceId(payload.workspaces[0].id);
   }
@@ -227,18 +237,19 @@ export function BoardroomApp() {
     setMessages(payload.messages || []);
   }
 
-  // ── Auth Actions ────────────────────────────────────────────────────────────
+  // ── Account Actions ─────────────────────────────────────────────────────────
 
-  async function handleAuth() {
-    setAuthError("");
-    const { error } = authMode === "signin"
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password });
-    if (error) setAuthError(error.message);
-    else if (authMode === "signup") showToast("Account created. Check your email if confirmation is required.");
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
   }
 
-  async function signOut() { await supabase.auth.signOut(); }
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("sis_theme_v1", next);
+    document.documentElement.classList.toggle("dark", next === "dark");
+  }
 
   // ── Chat ────────────────────────────────────────────────────────────────────
 
@@ -503,32 +514,40 @@ export function BoardroomApp() {
   }
 
 
-  // ── Login Screen ─────────────────────────────────────────────────────────────
+  // ── Studio Access Screens ────────────────────────────────────────────────────
 
   if (!sessionToken) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-paper px-4">
-        <section className="w-full max-w-md border border-stone-300 bg-white p-6 shadow-sm">
+      <main className="flex min-h-screen items-center justify-center bg-paper px-4 dark:bg-[#111716] dark:text-white">
+        <section className="w-full max-w-md border border-stone-300 bg-white p-7 shadow-sm dark:border-white/15 dark:bg-[#192321]">
           <div className="mb-6 flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center bg-teal text-white">
               <Users size={22} />
             </div>
             <div>
               <h1 className="font-serif text-2xl font-bold">AI Boardroom</h1>
-              <p className="text-sm text-stone-600">Private workspace login</p>
+              <p className="text-sm text-stone-600 dark:text-white/55">Colorado Mastermind Studio</p>
             </div>
           </div>
-          <label className="mb-1 block text-sm font-bold">Email</label>
-          <input className="mb-4 w-full border border-stone-300 px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleAuth()} />
-          <label className="mb-1 block text-sm font-bold">Password</label>
-          <input className="mb-4 w-full border border-stone-300 px-3 py-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleAuth()} />
-          {authError ? <p className="mb-3 text-sm text-red-700">{authError}</p> : null}
-          <button className="mb-3 flex w-full items-center justify-center gap-2 bg-ink px-4 py-2 font-bold text-white" onClick={handleAuth}>
-            <KeyRound size={16} /> {authMode === "signin" ? "Sign in" : "Create account"}
-          </button>
-          <button className="text-sm text-teal underline" onClick={() => setAuthMode(authMode === "signin" ? "signup" : "signin")}>
-            {authMode === "signin" ? "Need an account?" : "Already have an account?"}
-          </button>
+          <p className="mb-5 text-sm leading-6 text-stone-600 dark:text-white/65">Sign in once at Studio, then open every tool included with your account.</p>
+          <a className="flex w-full items-center justify-center gap-2 bg-ink px-4 py-3 font-bold text-white dark:bg-[#45c5c5] dark:text-[#071f1f]" href="/">
+            <Home size={16} /> Return to Studio
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  if (accessError) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-paper px-4 dark:bg-[#111716] dark:text-white">
+        <section className="w-full max-w-md border border-stone-300 bg-white p-7 shadow-sm dark:border-white/15 dark:bg-[#192321]">
+          <div className="mb-4 flex h-11 w-11 items-center justify-center bg-coral text-white"><Users size={22} /></div>
+          <h1 className="font-serif text-2xl font-bold">AI Boardroom is locked</h1>
+          <p className="my-4 text-sm leading-6 text-stone-600 dark:text-white/65">This Studio account does not currently include AI Boardroom access. Message David Bee for early access.</p>
+          <a className="flex w-full items-center justify-center gap-2 bg-ink px-4 py-3 font-bold text-white dark:bg-[#45c5c5] dark:text-[#071f1f]" href="/">
+            <Home size={16} /> Back to Studio
+          </a>
         </section>
       </main>
     );
@@ -538,8 +557,53 @@ export function BoardroomApp() {
 
   const activeCards = bundle?.cards?.filter(c => c.status !== "trash") ?? [];
 
+  const workCards = activeCards.length ? activeCards.map((card) => (
+    <div key={card.id} className={`mb-3 border p-3 ${card.status === "active" ? "border-teal/40 bg-teal/5" : "border-stone-200"}`}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-stone-500">
+          {ADVISOR_META[card.advisor] && <span className={`h-1.5 w-1.5 rounded-full ${ADVISOR_META[card.advisor].dot}`} />}
+          {card.advisor}
+        </span>
+        <span className={`text-xs ${card.status === "done" ? "text-green-600" : card.status === "active" ? "text-teal" : "text-stone-400"}`}>
+          {card.status}
+        </span>
+      </div>
+      <div className="text-sm font-semibold leading-snug">{card.title}</div>
+      {card.desired_output && <p className="mt-1.5 text-xs leading-relaxed text-stone-500">{card.desired_output}</p>}
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        <button
+          className="border border-teal px-2 py-1 text-xs font-bold text-teal transition-colors hover:bg-teal hover:text-white"
+          onClick={() => {
+            setChannel(card.advisor as typeof CHANNELS[number]);
+            setActiveCardId(card.id);
+            setTab("chat");
+            setMobileNavOpen(false);
+          }}
+        >
+          Work with {card.advisor}
+        </button>
+        <button
+          className="border border-stone-200 px-2 py-1 text-xs text-stone-500 transition-colors hover:border-green-400 hover:text-green-700"
+          onClick={() => updateCard(card.id, card.status === "done" ? "active" : "done")}
+        >
+          {card.status === "done" ? "Reopen" : "Done"}
+        </button>
+        <button
+          className="border border-stone-200 px-2 py-1 text-xs text-stone-400 transition-colors hover:border-red-300 hover:text-red-600"
+          onClick={() => updateCard(card.id, "trash")}
+        >
+          Trash
+        </button>
+      </div>
+    </div>
+  )) : (
+    <p className="mt-2 text-xs leading-relaxed text-stone-400">
+      Advisor Work Cards appear here after Tony closes a session with concrete next steps.
+    </p>
+  );
+
   return (
-    <main className="flex h-screen overflow-hidden bg-paper text-ink">
+    <main className="boardroom-shell flex h-[100dvh] overflow-hidden bg-paper text-ink dark:bg-[#111716] dark:text-white">
 
       {/* ── Toast Stack ── */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
@@ -554,7 +618,8 @@ export function BoardroomApp() {
       </div>
 
       {/* ── Sidebar ── */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-ink text-white">
+      {mobileNavOpen ? <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setMobileNavOpen(false)} /> : null}
+      <aside className={`boardroom-sidebar fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-white/10 bg-ink text-white transition-transform md:static md:translate-x-0 ${mobileNavOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="border-b border-white/10 p-4">
           <div className="font-serif text-lg font-bold leading-tight">AI Boardroom</div>
           <div className="mt-1 text-xs text-white/40">{bundle?.workspace.name || "Loading..."}</div>
@@ -563,13 +628,16 @@ export function BoardroomApp() {
         <nav className="flex-1 overflow-y-auto p-3">
           {/* Nav tabs */}
           <div className="mb-4 space-y-0.5">
-            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "chat" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => setTab("chat")}>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "chat" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("chat"); setMobileNavOpen(false); }}>
               <MessageSquare size={14} /> Chat
             </button>
-            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "docs" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => setTab("docs")}>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "cards" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("cards"); setMobileNavOpen(false); }}>
+              <Briefcase size={14} /> Work Cards <span className="ml-auto text-xs text-white/40">{activeCards.length}</span>
+            </button>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "docs" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("docs"); setMobileNavOpen(false); }}>
               <FileText size={14} /> Documents {bundle?.documents.length ? <span className="ml-auto text-xs text-white/40">{bundle.documents.length}</span> : null}
             </button>
-            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "settings" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => setTab("settings")}>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "settings" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("settings"); setMobileNavOpen(false); }}>
               <Settings size={14} /> Settings
             </button>
           </div>
@@ -616,7 +684,11 @@ export function BoardroomApp() {
           })}
         </nav>
 
-        <div className="border-t border-white/10 p-3">
+        <div className="space-y-1 border-t border-white/10 p-3">
+          <a className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white" href="/"><Home size={14} /> Studio home</a>
+          <button className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white" onClick={toggleTheme}>
+            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />} {theme === "dark" ? "Light mode" : "Dark mode"}
+          </button>
           <button className="flex w-full items-center justify-center gap-2 border border-white/20 px-3 py-2 text-sm text-white/70 hover:text-white transition-colors" onClick={signOut}>
             <LogOut size={14} /> Sign out
           </button>
@@ -627,8 +699,10 @@ export function BoardroomApp() {
       <section className="flex min-w-0 flex-1 flex-col">
 
         {/* Header */}
-        <header className="flex shrink-0 items-center justify-between border-b border-stone-300 bg-white px-5 py-3">
-          <div>
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-stone-300 bg-white px-4 py-3 dark:border-white/15 dark:bg-[#192321]">
+          <div className="flex min-w-0 items-center gap-3">
+            <button className="grid h-9 w-9 shrink-0 place-items-center border border-stone-300 md:hidden dark:border-white/15" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={18} /></button>
+            <div className="min-w-0">
             <h2 className="font-serif text-xl font-bold">
               {channel === "brainstorming" ? "# Boardroom" : `@ ${channel}`}
             </h2>
@@ -637,6 +711,7 @@ export function BoardroomApp() {
                 ? "Tony chairs the room — advisors speak, challenge turns run, Tony closes with the decision."
                 : `${ADVISOR_META[channel]?.role || "Advisor"} · 1:1 work session`}
             </p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {messages.length > 0 && (
@@ -831,53 +906,26 @@ export function BoardroomApp() {
             </div>
 
             {/* Advisor Workbench */}
-            <aside className="w-80 shrink-0 overflow-y-auto border-l border-stone-300 bg-white">
+            <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-stone-300 bg-white dark:border-white/15 dark:bg-[#192321] xl:block">
               <div className="border-b border-stone-200 px-4 py-3">
                 <h3 className="font-serif text-lg font-bold">Workbench</h3>
                 <p className="text-xs text-stone-500">{activeCards.length} active card{activeCards.length !== 1 ? "s" : ""}</p>
               </div>
               <div className="p-3">
-                {activeCards.length ? activeCards.map((card) => (
-                  <div key={card.id} className={`mb-3 border p-3 ${card.status === "active" ? "border-teal/40 bg-teal/5" : "border-stone-200"}`}>
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-stone-500">
-                        {ADVISOR_META[card.advisor] && <span className={`h-1.5 w-1.5 rounded-full ${ADVISOR_META[card.advisor].dot}`} />}
-                        {card.advisor}
-                      </span>
-                      <span className={`text-xs ${card.status === "done" ? "text-green-600" : card.status === "active" ? "text-teal" : "text-stone-400"}`}>
-                        {card.status}
-                      </span>
-                    </div>
-                    <div className="text-sm font-semibold leading-snug">{card.title}</div>
-                    {card.desired_output && <p className="mt-1.5 text-xs text-stone-500 leading-relaxed">{card.desired_output}</p>}
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      <button
-                        className="border border-teal px-2 py-1 text-xs font-bold text-teal hover:bg-teal hover:text-white transition-colors"
-                        onClick={() => { setChannel(card.advisor as typeof CHANNELS[number]); setActiveCardId(card.id); setTab("chat"); }}
-                      >
-                        Work with {card.advisor}
-                      </button>
-                      <button
-                        className="border border-stone-200 px-2 py-1 text-xs text-stone-500 hover:border-green-400 hover:text-green-700 transition-colors"
-                        onClick={() => updateCard(card.id, card.status === "done" ? "active" : "done")}
-                      >
-                        {card.status === "done" ? "Reopen" : "Done"}
-                      </button>
-                      <button
-                        className="border border-stone-200 px-2 py-1 text-xs text-stone-400 hover:border-red-300 hover:text-red-600 transition-colors"
-                        onClick={() => updateCard(card.id, "trash")}
-                      >
-                        Trash
-                      </button>
-                    </div>
-                  </div>
-                )) : (
-                  <p className="text-xs text-stone-400 leading-relaxed mt-2">
-                    Advisor Work Cards appear here after Tony closes a session with concrete next steps.
-                  </p>
-                )}
+                {workCards}
               </div>
             </aside>
+          </div>
+        ) : null}
+
+        {/* Work Cards tab */}
+        {tab === "cards" ? (
+          <div className="flex-1 overflow-y-auto p-5">
+            <div className="mb-4">
+              <h3 className="font-serif text-2xl font-bold">Work Cards</h3>
+              <p className="text-sm text-stone-500">{activeCards.length} active card{activeCards.length !== 1 ? "s" : ""}</p>
+            </div>
+            <div className="max-w-2xl">{workCards}</div>
           </div>
         ) : null}
 
@@ -933,7 +981,7 @@ export function BoardroomApp() {
                   className="flex items-center gap-2 border border-stone-300 px-4 py-2 text-sm font-bold hover:border-teal transition-colors"
                   onClick={async () => {
                     const headers = await authHeaders();
-                    const res = await fetch(`/api/workspaces/${workspaceId}/export`, { headers });
+                    const res = await fetch(boardroomPath(`/api/workspaces/${workspaceId}/export`), { headers });
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");

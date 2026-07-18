@@ -13,8 +13,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
   }
 
   const { data, error } = await authed.supabase
-    .from("messages")
-    .select("speaker,content,stage,created_at,conversations(title,channel)")
+    .from("boardroom_messages")
+    .select("speaker,content,stage,created_at,boardroom_conversations(title,channel)")
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: true });
 

@@ -18,6 +18,42 @@ body {
   color: #132023;
 }
 
+html.dark,
+html.dark body {
+  background: #111716;
+  color: #f8fafa;
+  color-scheme: dark;
+}
+
+.dark .bg-paper { background-color: #111716; }
+.dark .bg-white { background-color: #192321; }
+.dark .bg-stone-50,
+.dark .bg-stone-100 { background-color: #24302d; }
+.dark .bg-red-50 { background-color: rgba(180, 58, 50, 0.12); }
+.dark .text-ink,
+.dark .text-stone-900,
+.dark .text-stone-800 { color: #f8fafa; }
+.dark .text-stone-700,
+.dark .text-stone-600 { color: #a8dede; }
+.dark .text-stone-500,
+.dark .text-stone-400 { color: #68a9a9; }
+.dark .border-stone-100,
+.dark .border-stone-200,
+.dark .border-stone-300,
+.dark .border-stone-400 { border-color: rgba(125, 216, 216, 0.19); }
+.dark input,
+.dark textarea,
+.dark select { background: #111716; color: #f8fafa; }
+.dark .prose { color: #dcebea; }
+.dark .prose strong,
+.dark .prose h1,
+.dark .prose h2,
+.dark .prose h3 { color: #f8fafa; }
+
+@media (max-width: 767px) {
+  .boardroom-shell > section { min-width: 0; width: 100%; }
+}
+
 body {
   margin: 0;
 }

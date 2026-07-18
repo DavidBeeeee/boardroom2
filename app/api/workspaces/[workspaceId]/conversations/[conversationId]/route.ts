@@ -13,8 +13,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
   }
 
   const [conversation, messages] = await Promise.all([
-    authed.supabase.from("conversations").select("*").eq("workspace_id", workspaceId).eq("id", conversationId).single(),
-    authed.supabase.from("messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true })
+    authed.supabase.from("boardroom_conversations").select("*").eq("workspace_id", workspaceId).eq("id", conversationId).single(),
+    authed.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true })
   ]);
 
   const error = conversation.error || messages.error;

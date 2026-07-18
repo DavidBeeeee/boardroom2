@@ -32,7 +32,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   let conversationId = String(body.conversationId || "");
   if (!conversationId) {
     const { data, error } = await authed.supabase
-      .from("conversations")
+      .from("boardroom_conversations")
       .insert({
         workspace_id: workspaceId,
         title: channel === "brainstorming" ? "Boardroom" : `${channel} 1:1`,
@@ -48,12 +48,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   // Load workspace context
   const [settings, documents, memory, previousMessages, activeCard] = await Promise.all([
-    authed.supabase.from("workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
-    authed.supabase.from("documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(24),
+    authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    authed.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
+    authed.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
+    authed.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(24),
     body.cardId
-      ? authed.supabase.from("advisor_cards").select("title,advisor,context,desired_output").eq("workspace_id", workspaceId).eq("id", String(body.cardId)).maybeSingle()
+      ? authed.supabase.from("boardroom_advisor_cards").select("title,advisor,context,desired_output").eq("workspace_id", workspaceId).eq("id", String(body.cardId)).maybeSingle()
       : Promise.resolve({ data: null, error: null })
   ]);
 
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   // Save user message to DB
   const { data: userMessage, error: userMessageError } = await authed.supabase
-    .from("messages")
+    .from("boardroom_messages")
     .insert({ workspace_id: workspaceId, conversation_id: conversationId, role: "user", speaker: "You", content: text, stage: "user_prompt" })
     .select("*")
     .single();
@@ -99,14 +99,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     }));
 
     const { data: insertedMessages, error: messageError } = await authed.supabase
-      .from("messages").insert(messageRows).select("*");
+      .from("boardroom_messages").insert(messageRows).select("*");
     if (messageError) return jsonError(messageError.message, 500);
 
     // For 1:1 sessions or done sessions, also save memory
     if (result.nextStage === "done" || result.nextStage === "clarify") {
       const lastMsg = result.turns.at(-1);
       if (lastMsg) {
-        await authed.supabase.from("memory_entries").insert({
+        await authed.supabase.from("boardroom_memory_entries").insert({
           workspace_id: workspaceId,
           kind: "session_summary",
           content: `Prompt: ${text.slice(0, 300)}\nResponse: ${lastMsg.content.slice(0, 800)}`,
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       }
     }
 
-    await authed.supabase.from("conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
+    await authed.supabase.from("boardroom_conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
 
     return NextResponse.json({
       conversationId,
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   } catch (error) {
     const message = error instanceof Error ? error.message : "Boardroom error.";
-    await authed.supabase.from("messages").insert({
+    await authed.supabase.from("boardroom_messages").insert({
       workspace_id: workspaceId, conversation_id: conversationId,
       role: "system", speaker: "System", content: message, stage: "error"
     });
