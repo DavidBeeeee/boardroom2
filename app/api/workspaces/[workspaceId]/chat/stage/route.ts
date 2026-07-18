@@ -30,15 +30,20 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   }
 
   // Load fresh context and history
-  const [settings, documents, memory, previousMessages] = await Promise.all([
+  const [settings, profile, documents, memory, previousMessages] = await Promise.all([
     authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    authed.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
     authed.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
     authed.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
     authed.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
   ]);
 
+  const loadError = settings.error || profile.error || documents.error || memory.error || previousMessages.error;
+  if (loadError) return jsonError(loadError.message, 500);
+
   const contextText = buildBoardroomContext({
     guardrails: settings.data?.guardrails || "",
+    profile: profile.data,
     documents: documents.data || [],
     memory: memory.data || [],
     recentMessages: previousMessages.data || [],
@@ -51,6 +56,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     mode,
     clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
     sessionState,
+    ceoName: profile.data?.preferred_name || "CEO",
   };
 
   try {

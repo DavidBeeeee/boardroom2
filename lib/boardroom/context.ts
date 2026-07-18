@@ -1,8 +1,9 @@
-import type { DocumentRecord, Message } from "@/lib/types";
+import type { BoardroomProfile, DocumentRecord, Message } from "@/lib/types";
 import { BOARDROOM_GUARDRAILS } from "./advisors";
 
 type ContextInput = {
   guardrails?: string;
+  profile?: BoardroomProfile | null;
   documents: Pick<DocumentRecord, "name" | "extracted_text">[];
   memory: { kind: string; content: string; metadata?: Record<string, unknown> }[];
   recentMessages: Pick<Message, "speaker" | "content" | "role">[];
@@ -15,7 +16,27 @@ export function buildBoardroomContext(input: ContextInput) {
     "Source hierarchy: workspace guardrails and master business documents outrank project files, memory, and chat assumptions."
   ];
 
-  // Documents first — these are David's verified business context
+  if (input.profile) {
+    const profile = input.profile;
+    const profileLines = [
+      `Preferred name: ${profile.preferred_name}`,
+      profile.role_title && `Role: ${profile.role_title}`,
+      profile.business_name && `Business: ${profile.business_name}`,
+      profile.business_description && `Business context: ${profile.business_description}`,
+      profile.ideal_customer && `Ideal customer: ${profile.ideal_customer}`,
+      profile.offers && `Offers: ${profile.offers}`,
+      profile.current_goals && `Current goals: ${profile.current_goals}`,
+      profile.constraints && `Constraints: ${profile.constraints}`,
+      profile.additional_context && `Additional context: ${profile.additional_context}`,
+    ].filter(Boolean);
+
+    parts.push(
+      `CURRENT CEO PROFILE (verified and specific to this workspace):\n${profileLines.join("\n")}\n\n` +
+      `Address the CEO as ${profile.preferred_name || "CEO"}. Apply every advisor instruction and example to this CEO, their business, and their circumstances. Never assume this CEO is David or reuse another workspace's identity.`
+    );
+  }
+
+  // Documents are verified workspace context.
   if (input.documents.length) {
     parts.push(
       `WORKSPACE DOCUMENTS (treat as verified business context):\n` +
@@ -25,7 +46,7 @@ export function buildBoardroomContext(input: ContextInput) {
     );
   }
 
-  // Active card — highest priority context if David is in a 1:1
+  // Active card is highest priority context in a 1:1.
   if (input.activeCard) {
     parts.push(
       `ACTIVE ADVISOR WORK CARD:\n` +

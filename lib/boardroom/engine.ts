@@ -48,8 +48,20 @@ export function historyMessages(history: Pick<Message, "role" | "speaker" | "con
   }));
 }
 
-async function llm(messages: ChatMessage[], clientApiKey?: string): Promise<string> {
-  return callDeepSeek(messages, clientApiKey);
+function personalizeForCeo(content: string, ceoName = "CEO") {
+  const name = ceoName.trim() || "CEO";
+  return content
+    .replace(/David Allen/g, "__BOARDROOM_DAVID_ALLEN__")
+    .replace(/\bDavid\b/g, name)
+    .replace(/\bDAVID\b/g, name)
+    .replace(/__BOARDROOM_DAVID_ALLEN__/g, "David Allen");
+}
+
+async function llm(messages: ChatMessage[], clientApiKey?: string, ceoName?: string): Promise<string> {
+  return callDeepSeek(messages.map(message => ({
+    ...message,
+    content: personalizeForCeo(message.content, ceoName),
+  })), clientApiKey);
 }
 
 async function structured<T>(messages: ChatMessage[], clientApiKey: string | undefined, fallback: T): Promise<T> {
@@ -139,6 +151,7 @@ export async function runTonyIntake(input: {
   clientApiKey?: string;
   tonyOnly?: boolean;
   activeAdvisor?: AdvisorName;
+  ceoName?: string;
 }): Promise<{ turns: BoardroomTurn[]; sessionState: SessionState | null; nextStage: StageResult["nextStage"] | "done" | "clarify" | "one_to_one" }> {
 
   // 1:1 advisor session — run and finish immediately
@@ -159,7 +172,7 @@ export async function runTonyIntake(input: {
       },
       ...baseHistory,
       { role: "user", content: input.userPrompt }
-    ], input.clientApiKey);
+    ], input.clientApiKey, input.ceoName);
 
     return {
       turns: [{ speaker: "Tony", stage: "tony_only", content: raw }],
@@ -226,7 +239,7 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
       },
       ...baseHistory,
       { role: "user", content: "You are Tony. Route the team to build the plan quoted above. Assign each advisor a specific piece of it. Output your brief routing message then the JSON:" }
-    ], input.clientApiKey);
+    ], input.clientApiKey, input.ceoName);
 
     let routingData = fallbackRouting;
     try { routingData = { ...fallbackRouting, ...parseJson<RoutingData>(rawRouting) }; }
@@ -325,7 +338,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     },
     ...baseHistory,
     { role: "user", content: input.userPrompt }
-  ], input.clientApiKey);
+  ], input.clientApiKey, input.ceoName);
 
   // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
   // If mustRoute is true, Tony should not clarify — force routing.
@@ -335,7 +348,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
       // Tony failed to route despite the override — force a moonshot routing.
       const forcedState: SessionState = {
         userPrompt: input.userPrompt,
-        tonyIntakeMessage: rawTonyResponse.trim() || "David, you said the word. Full moonshot. Team, we're building the real plan — no safety nets 🔥",
+        tonyIntakeMessage: rawTonyResponse.trim() || `${input.ceoName || "CEO"}, you said the word. Full moonshot. Team, we're building the real plan — no safety nets 🔥`,
         selectedAdvisors: ["Russell", "Allen", "Calvina"],
         advisorQuestions: {
           Russell: "Build the complete moonshot revenue stack. Show all the math. David has committed to doing whatever it takes — no conservative assumptions.",
@@ -370,7 +383,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     : rawTonyResponse.replace(/\{[\s\S]*\}/, "").trim();
 
   if (!tonyMessage || tonyMessage.length < 20) {
-    tonyMessage = "David, I have the signal. Let me bring the right people in.";
+    tonyMessage = `${input.ceoName || "CEO"}, I have the signal. Let me bring the right people in.`;
   }
 
   const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: tonyMessage }];
@@ -417,6 +430,7 @@ export async function runAdvisorRound(input: {
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
+  ceoName?: string;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
   const round = sessionState.currentRound + 1;
@@ -487,9 +501,9 @@ Plain text only — no JSON, no code blocks.
 150-300 words. Full personality. Bold key phrases. Emojis. No --- dividers. No ## headers.`
         },
         { role: "user", content: `You are ${advisor}. Respond now in ${advisor}'s voice only. Do not reproduce the conversation history. Write your response:` }
-      ], input.clientApiKey);
+      ], input.clientApiKey, input.ceoName);
 
-      return { advisor, message: message || fallbackAdvisorTurn(advisor) };
+      return { advisor, message: message || fallbackAdvisorTurn(advisor, input.ceoName) };
     })
   );
 
@@ -522,6 +536,7 @@ export async function runChanosRound(input: {
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
+  ceoName?: string;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
   const round = sessionState.currentChanosRound + 1;
@@ -577,7 +592,7 @@ CRITICAL: Write ONLY Chanos's response. Do NOT reproduce the conversation above.
 NO --- dividers. NO ## headers. 200-350 words. Prosecutorial and precise — find the flaw in every argument, not just the obvious one.`
   },
   { role: "user", content: "You are Chanos. Short the advisors now. Write only Chanos's response:" }
-  ], input.clientApiKey);
+  ], input.clientApiKey, input.ceoName);
 
   const turn: BoardroomTurn = { speaker: "Chanos", stage: `chanos_round_${round}`, content: raw };
 
@@ -604,6 +619,7 @@ export async function runTonyClose(input: {
   mode: ModeContext;
   clientApiKey?: string;
   sessionState: SessionState;
+  ceoName?: string;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
 
@@ -663,7 +679,7 @@ THE CHECKPOINT: how David will know this worked]
 \`\`\``
   },
   { role: "user", content: "You are Tony. Write your closing synthesis now. Do not reproduce any prior messages. Start with THE CALL:" }
-  ], input.clientApiKey);
+  ], input.clientApiKey, input.ceoName);
 
   // Extract Tony's close message — everything before the ```json block
   const codeBlockIdx = rawClose.indexOf("```");
@@ -712,7 +728,7 @@ THE CHECKPOINT: how David will know this worked]
 
 async function runAdvisorOneToOne(
   advisor: AdvisorName,
-  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; }
+  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; ceoName?: string; }
 ) {
   const raw = await llm([
     {
@@ -721,7 +737,7 @@ async function runAdvisorOneToOne(
     },
     ...historyMessages(input.history),
     { role: "user", content: input.userPrompt }
-  ], input.clientApiKey);
+  ], input.clientApiKey, input.ceoName);
 
   return {
     turns: [{ speaker: advisor, stage: "advisor_one_to_one", content: raw }],
@@ -740,6 +756,7 @@ export async function runBoardroomEngine(input: {
   clientApiKey?: string;
   activeAdvisor?: AdvisorName;
   tonyOnly?: boolean;
+  ceoName?: string;
 }) {
   if (input.activeAdvisor) {
     const raw = await llm([
@@ -749,7 +766,7 @@ export async function runBoardroomEngine(input: {
       },
       ...historyMessages(input.history),
       { role: "user", content: input.userPrompt }
-    ], input.clientApiKey);
+    ], input.clientApiKey, input.ceoName);
     return { turns: [{ speaker: input.activeAdvisor, stage: "advisor_one_to_one", content: raw }], cards: [] as GeneratedCard[], tension: "" };
   }
   return { turns: [] as BoardroomTurn[], cards: [] as GeneratedCard[], tension: "" };
@@ -768,9 +785,9 @@ function formatClose(close: { decision: string; decisionBrief: Record<string, st
   ].join("\n");
 }
 
-function fallbackAdvisorTurn(advisor: AdvisorName): string {
+function fallbackAdvisorTurn(advisor: AdvisorName, ceoName = "CEO"): string {
   const fallbacks: Record<AdvisorName, string> = {
-    Tony: "David, turn this signal into one concrete decision, one next action, one artifact.",
+    Tony: `${ceoName || "CEO"}, turn this signal into one concrete decision, one next action, one artifact.`,
     Russell: "The commercial path needs to be concrete: one audience, one hook, one offer, one conversion event. If we can't name all four, it's still theater. 🎣",
     Allen: "What does done look like? Strip it until the first move takes 20 minutes or less. ✅",
     Chanos: "The plan fails if distribution, proof, cash conversion, or delivery capacity is assumed instead of verified. Kill the fantasy math. 🩸",

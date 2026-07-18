@@ -19,12 +19,14 @@ import {
   Sun,
   Moon,
   Upload,
+  UserRound,
   Users,
   X,
 } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import { boardroomPath } from "@/lib/boardroom/path";
-import type { AdvisorCard, Conversation, DocumentRecord, Message, ModeContext, Workspace } from "@/lib/types";
+import { BoardroomProfileForm, type BoardroomProfileDraft } from "@/components/boardroom-profile-form";
+import type { AdvisorCard, BoardroomProfile, Conversation, DocumentRecord, Message, ModeContext, Workspace } from "@/lib/types";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -80,6 +82,7 @@ type WorkspaceBundle = {
   conversations: Conversation[];
   cards: AdvisorCard[];
   settings: { guardrails?: string } | null;
+  profile: BoardroomProfile | null;
 };
 
 type Toast = { id: number; message: string };
@@ -113,7 +116,7 @@ export function BoardroomApp() {
   const [tonyOnly, setTonyOnly] = useState(false);
   const [typingAdvisor, setTypingAdvisor] = useState<string | null>(null);
   const [activeCardId, setActiveCardId] = useState("");
-  const [tab, setTab] = useState<"chat" | "cards" | "docs" | "settings">("chat");
+  const [tab, setTab] = useState<"chat" | "cards" | "docs" | "profile" | "settings">("chat");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [autoScroll, setAutoScroll] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -484,8 +487,19 @@ export function BoardroomApp() {
 
   // ── Settings ─────────────────────────────────────────────────────────────────
 
+  async function saveProfile(draft: BoardroomProfileDraft) {
+    if (!workspaceId) return;
+    const payload = await api(`/api/workspaces/${workspaceId}/profile`, {
+      method: "PUT",
+      body: JSON.stringify(draft),
+    });
+    setBundle(current => current ? { ...current, profile: payload.profile } : current);
+    setTab("chat");
+    showToast("Profile saved.");
+  }
+
   async function freshStart() {
-    if (!workspaceId || !confirm("Fresh Start clears conversations, cards, and generated memory. Documents and workspace settings stay.")) return;
+    if (!workspaceId || !confirm("Fresh Start clears conversations, cards, and generated memory. Your profile, documents, and workspace settings stay.")) return;
     await api(`/api/workspaces/${workspaceId}/fresh-start`, { method: "POST", body: JSON.stringify({}) });
     setMessages([]);
     setConversationId("");
@@ -549,6 +563,20 @@ export function BoardroomApp() {
             <Home size={16} /> Back to Studio
           </a>
         </section>
+      </main>
+    );
+  }
+
+  if (bundle && !bundle.profile?.onboarding_complete) {
+    return (
+      <main className="min-h-screen overflow-y-auto bg-paper text-ink dark:bg-[#111716] dark:text-white">
+        <div className="flex items-center justify-between border-b border-stone-300 bg-white px-4 py-3 dark:border-white/15 dark:bg-[#192321]">
+          <a className="flex items-center gap-2 text-sm font-bold text-stone-600 hover:text-teal dark:text-white/65" href="/"><Home size={15} /> Studio home</a>
+          <button className="grid h-9 w-9 place-items-center border border-stone-300 dark:border-white/15" type="button" onClick={toggleTheme} aria-label={theme === "dark" ? "Use light mode" : "Use dark mode"}>
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+        </div>
+        <BoardroomProfileForm profile={bundle.profile} onboarding onSave={saveProfile} />
       </main>
     );
   }
@@ -637,6 +665,9 @@ export function BoardroomApp() {
             <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "docs" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("docs"); setMobileNavOpen(false); }}>
               <FileText size={14} /> Documents {bundle?.documents.length ? <span className="ml-auto text-xs text-white/40">{bundle.documents.length}</span> : null}
             </button>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "profile" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("profile"); setMobileNavOpen(false); }}>
+              <UserRound size={14} /> My Profile
+            </button>
             <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "settings" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("settings"); setMobileNavOpen(false); }}>
               <Settings size={14} /> Settings
             </button>
@@ -704,10 +735,10 @@ export function BoardroomApp() {
             <button className="grid h-9 w-9 shrink-0 place-items-center border border-stone-300 md:hidden dark:border-white/15" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={18} /></button>
             <div className="min-w-0">
             <h2 className="font-serif text-xl font-bold">
-              {channel === "brainstorming" ? "# Boardroom" : `@ ${channel}`}
+              {tab === "profile" ? "My Profile" : tab === "docs" ? "Documents" : tab === "cards" ? "Work Cards" : tab === "settings" ? "Settings" : channel === "brainstorming" ? "# Boardroom" : `@ ${channel}`}
             </h2>
             <p className="text-xs text-stone-500">
-              {channel === "brainstorming"
+              {tab === "profile" ? `The team knows you as ${bundle?.profile?.preferred_name || "CEO"}.` : channel === "brainstorming"
                 ? "Tony chairs the room — advisors speak, challenge turns run, Tony closes with the decision."
                 : `${ADVISOR_META[channel]?.role || "Advisor"} · 1:1 work session`}
             </p>
@@ -955,6 +986,13 @@ export function BoardroomApp() {
           </div>
         ) : null}
 
+        {/* Profile tab */}
+        {tab === "profile" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <BoardroomProfileForm profile={bundle?.profile} onSave={saveProfile} onCancel={() => setTab("chat")} />
+          </div>
+        ) : null}
+
         {/* Settings tab */}
         {tab === "settings" ? (
           <div className="max-w-xl p-5 space-y-4">
@@ -974,6 +1012,9 @@ export function BoardroomApp() {
               <h3 className="mb-1 flex items-center gap-2 font-serif text-lg font-bold"><Briefcase size={16} /> Workspace</h3>
               <p className="text-xs text-stone-500 mb-3">{bundle?.workspace.name} · {bundle?.workspace.slug}</p>
               <div className="flex flex-wrap gap-3">
+                <button className="flex items-center gap-2 border border-stone-300 px-4 py-2 text-sm font-bold transition-colors hover:border-teal hover:text-teal" onClick={() => setTab("profile")}>
+                  <UserRound size={14} /> Edit profile
+                </button>
                 <button className="flex items-center gap-2 border border-red-300 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50 transition-colors" onClick={freshStart}>
                   <RefreshCcw size={14} /> Fresh Start
                 </button>

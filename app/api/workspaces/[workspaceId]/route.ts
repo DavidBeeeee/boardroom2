@@ -12,15 +12,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
     return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
   }
 
-  const [workspace, documents, conversations, cards, settings] = await Promise.all([
+  const [workspace, documents, conversations, cards, settings, profile] = await Promise.all([
     authed.supabase.from("boardroom_workspaces").select("id,name,slug,created_at").eq("id", workspaceId).single(),
     authed.supabase.from("boardroom_documents").select("id,workspace_id,name,mime_type,storage_path,byte_size,status,error,created_at").eq("workspace_id", workspaceId).order("created_at", { ascending: false }),
     authed.supabase.from("boardroom_conversations").select("id,workspace_id,title,channel,mode,created_at,updated_at").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }),
     authed.supabase.from("boardroom_advisor_cards").select("*").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }),
-    authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle()
+    authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    authed.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle()
   ]);
 
-  const error = workspace.error || documents.error || conversations.error || cards.error || settings.error;
+  const error = workspace.error || documents.error || conversations.error || cards.error || settings.error || profile.error;
   if (error) return jsonError(error.message, 500);
 
   return NextResponse.json({
@@ -28,6 +29,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
     documents: documents.data || [],
     conversations: conversations.data || [],
     cards: cards.data || [],
-    settings: settings.data
+    settings: settings.data,
+    profile: profile.data
   });
 }
