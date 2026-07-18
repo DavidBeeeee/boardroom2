@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
   }
 
   const { data, error } = await authed.supabase
-    .from("documents")
+    .from("boardroom_documents")
     .select("id,workspace_id,name,mime_type,storage_path,byte_size,status,error,created_at")
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: false });
@@ -49,12 +49,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   const storagePath = `${workspaceId}/${randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]+/g, "-")}`;
   const { error: uploadError } = await authed.supabase.storage
-    .from("workspace-documents")
+    .from("boardroom-documents")
     .upload(storagePath, file, { contentType: file.type || "application/octet-stream", upsert: false });
   if (uploadError) return jsonError(uploadError.message, 500);
 
   const { data, error } = await authed.supabase
-    .from("documents")
+    .from("boardroom_documents")
     .insert({
       workspace_id: workspaceId,
       uploaded_by: authed.userId,

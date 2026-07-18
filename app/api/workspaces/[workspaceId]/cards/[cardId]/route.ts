@@ -18,7 +18,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ workspace
     if (body[key] !== undefined) patch[key] = body[key];
   }
   const { data, error } = await authed.supabase
-    .from("advisor_cards")
+    .from("boardroom_advisor_cards")
     .update(patch)
     .eq("workspace_id", workspaceId)
     .eq("id", cardId)

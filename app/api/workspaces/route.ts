@@ -5,11 +5,8 @@ export async function GET(req: NextRequest) {
   const authed = await createRequestSupabase(req);
   if (authed instanceof NextResponse) return authed;
 
-  const { data, error } = await authed.supabase
-    .from("workspaces")
-    .select("id,name,slug,created_at")
-    .order("created_at", { ascending: true });
+  const { data, error } = await authed.supabase.rpc("boardroom_ensure_workspace");
 
-  if (error) return jsonError(error.message, 500);
+  if (error) return jsonError(error.message, error.message.toLowerCase().includes("access required") ? 403 : 500);
   return NextResponse.json({ workspaces: data || [] });
 }

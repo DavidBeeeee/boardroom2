@@ -31,10 +31,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   // Load fresh context and history
   const [settings, documents, memory, previousMessages] = await Promise.all([
-    authed.supabase.from("workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
-    authed.supabase.from("documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
+    authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    authed.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
+    authed.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
+    authed.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
   ]);
 
   const contextText = buildBoardroomContext({
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     }));
 
     const { data: insertedMessages, error: messageError } = await authed.supabase
-      .from("messages").insert(messageRows).select("*");
+      .from("boardroom_messages").insert(messageRows).select("*");
     if (messageError) return jsonError(messageError.message, 500);
 
     // Save cards and memory on final close
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       if (result.cards.length) {
         const sourceMessageId = insertedMessages?.find(m => m.stage === "tony_close")?.id || null;
         const { data: cards, error: cardError } = await authed.supabase
-          .from("advisor_cards")
+          .from("boardroom_advisor_cards")
           .insert(result.cards.map(card => ({
             workspace_id: workspaceId,
             conversation_id: conversationId,
@@ -111,7 +111,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       // Save session summary to memory
       const closeContent = result.turns.find(t => t.stage === "tony_close")?.content || "";
       if (closeContent) {
-        await authed.supabase.from("memory_entries").insert({
+        await authed.supabase.from("boardroom_memory_entries").insert({
           workspace_id: workspaceId,
           kind: "session_summary",
           content: [
@@ -135,7 +135,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   } catch (error) {
     const message = error instanceof Error ? error.message : "Stage error.";
-    await authed.supabase.from("messages").insert({
+    await authed.supabase.from("boardroom_messages").insert({
       workspace_id: workspaceId, conversation_id: conversationId,
       role: "system", speaker: "System", content: message, stage: "error"
     });

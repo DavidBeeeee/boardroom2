@@ -37,7 +37,7 @@ async function main() {
   const artifactsDir = path.join(localRoot, "artifacts");
   const supabase = createServiceSupabase();
 
-  await supabase.from("workspace_settings").upsert({
+  await supabase.from("boardroom_workspace_settings").upsert({
     workspace_id: workspaceId,
     guardrails: BOARDROOM_GUARDRAILS,
     advisor_settings: {}
@@ -46,8 +46,8 @@ async function main() {
   const masterDoc = await readText(path.join(projectRoot, "David_Bee_Master_Business_Document.md"));
   if (masterDoc.trim()) {
     const storagePath = `${workspaceId}/imported-David_Bee_Master_Business_Document.md`;
-    await supabase.storage.from("workspace-documents").upload(storagePath, new Blob([masterDoc], { type: "text/markdown" }), { upsert: true });
-    await supabase.from("documents").insert({
+    await supabase.storage.from("boardroom-documents").upload(storagePath, new Blob([masterDoc], { type: "text/markdown" }), { upsert: true });
+    await supabase.from("boardroom_documents").insert({
       workspace_id: workspaceId,
       name: "David_Bee_Master_Business_Document.md",
       mime_type: "text/markdown",
@@ -61,8 +61,8 @@ async function main() {
   const calvinaKnowledge = await readText(path.join(localRoot, "knowledge", "wild-method-calvina.md"));
   if (calvinaKnowledge.trim()) {
     const storagePath = `${workspaceId}/imported-wild-method-calvina.md`;
-    await supabase.storage.from("workspace-documents").upload(storagePath, new Blob([calvinaKnowledge], { type: "text/markdown" }), { upsert: true });
-    await supabase.from("documents").insert({
+    await supabase.storage.from("boardroom-documents").upload(storagePath, new Blob([calvinaKnowledge], { type: "text/markdown" }), { upsert: true });
+    await supabase.from("boardroom_documents").insert({
       workspace_id: workspaceId,
       name: "wild-method-calvina.md",
       mime_type: "text/markdown",
@@ -77,7 +77,7 @@ async function main() {
   for (const file of memoryFiles) {
     const content = await readText(path.join(stateDir, file));
     if (content.trim()) {
-      await supabase.from("memory_entries").insert({
+      await supabase.from("boardroom_memory_entries").insert({
         workspace_id: workspaceId,
         kind: file.replace(".md", ""),
         content,
@@ -88,7 +88,7 @@ async function main() {
 
   const actions = await readJson<Record<string, unknown>[]>(path.join(stateDir, "actions.json"), []);
   if (actions.length) {
-    await supabase.from("advisor_cards").insert(actions.map((action) => ({
+    await supabase.from("boardroom_advisor_cards").insert(actions.map((action) => ({
       workspace_id: workspaceId,
       type: String(action.type || "local_doc"),
       work_type: String(action.workType || "manual"),
@@ -108,7 +108,7 @@ async function main() {
 
   const summaries = await readJson<Record<string, unknown>[]>(path.join(stateDir, "session-summaries.json"), []);
   for (const summary of summaries.slice(0, 100)) {
-    await supabase.from("memory_entries").insert({
+    await supabase.from("boardroom_memory_entries").insert({
       workspace_id: workspaceId,
       kind: "imported_session_summary",
       content: [
@@ -124,7 +124,7 @@ async function main() {
   for (const artifact of artifactNames.filter((name) => name.endsWith(".md")).slice(0, 100)) {
     const content = await readText(path.join(artifactsDir, artifact));
     if (content.trim()) {
-      await supabase.from("memory_entries").insert({
+      await supabase.from("boardroom_memory_entries").insert({
         workspace_id: workspaceId,
         kind: "imported_artifact",
         content: content.slice(0, 20000),
