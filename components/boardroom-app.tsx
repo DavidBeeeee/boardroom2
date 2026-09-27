@@ -633,12 +633,15 @@ export function BoardroomApp() {
   return (
     <main className="boardroom-shell flex h-[100dvh] overflow-hidden bg-paper text-ink dark:bg-[#111716] dark:text-white">
 
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {typingAdvisor ? `${typingAdvisor} is preparing a response.` : busy ? "The Boardroom is working on your request." : "The Boardroom is ready."}
+      </p>
       {/* ── Toast Stack ── */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
         {toasts.map(toast => (
           <div key={toast.id} className="flex items-center gap-2 bg-ink text-white px-4 py-2 text-sm shadow-lg pointer-events-auto animate-in fade-in slide-in-from-bottom-2">
             {toast.message}
-            <button onClick={() => setToasts(t => t.filter(x => x.id !== toast.id))} className="ml-2 opacity-60 hover:opacity-100">
+            <button aria-label="Dismiss notification" onClick={() => setToasts(t => t.filter(x => x.id !== toast.id))} className="ml-2 opacity-60 hover:opacity-100">
               <X size={12} />
             </button>
           </div>
@@ -653,9 +656,10 @@ export function BoardroomApp() {
           <div className="mt-1 text-xs text-white/40">{bundle?.workspace.name || "Loading..."}</div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-3">
+        <nav aria-label="Boardroom workspace" className="flex-1 overflow-y-auto p-3">
           {/* Nav tabs */}
-          <div className="mb-4 space-y-0.5">
+          <div className="mb-4 space-y-0.5" aria-label="Workspace sections">
+            <p className="sr-only">Current section: {tab}</p>
             <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "chat" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("chat"); setMobileNavOpen(false); }}>
               <MessageSquare size={14} /> Chat
             </button>
@@ -676,6 +680,8 @@ export function BoardroomApp() {
           {/* Channels */}
           <div className="mb-2 px-3 text-xs font-semibold uppercase tracking-widest text-white/30">Channels</div>
           <button
+            aria-label="Open the full Boardroom conversation"
+            aria-pressed={channel === "brainstorming" && tab === "chat"}
             className={`mb-1 w-full px-3 py-2 text-left text-sm transition-colors ${channel === "brainstorming" && tab === "chat" ? "bg-teal text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
             onClick={() => {
               const savedId = channelConvIds["brainstorming"] || "";
@@ -696,6 +702,8 @@ export function BoardroomApp() {
             return (
               <button
                 key={name}
+                aria-label={`Work with ${name}, ${meta.role}`}
+                aria-pressed={channel === name && tab === "chat"}
                 className={`mb-0.5 flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${channel === name && tab === "chat" ? "bg-teal text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
                 onClick={() => {
                   const savedId = channelConvIds[name] || "";
@@ -717,6 +725,12 @@ export function BoardroomApp() {
 
         <div className="space-y-1 border-t border-white/10 p-3">
           <a className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white" href="/"><Home size={14} /> Studio home</a>
+          <a className="block px-3 py-2 text-sm text-white/80 underline" href="mailto:contact@davidbee.me?subject=AI%20Boardroom%20help">Contact David for help</a>
+          <details className="px-3 py-2 text-sm text-white/80">
+            <summary className="cursor-pointer">How this room uses your data</summary>
+            <p className="mt-2 leading-relaxed">Your conversations and uploaded document content are stored with your workspace. Access is checked against workspace membership. Relevant context is sent to DeepSeek to generate advisor responses, so avoid uploading secrets or material you cannot share with an AI provider.</p>
+            <p className="mt-2 leading-relaxed">An optional DeepSeek key you enter stays in this browser tab’s session storage and is sent with generation requests, not saved as a workspace database setting. This is not a guarantee about the provider’s own retention policies.</p>
+          </details>
           <button className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white" onClick={toggleTheme}>
             {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />} {theme === "dark" ? "Light mode" : "Dark mode"}
           </button>
@@ -727,7 +741,7 @@ export function BoardroomApp() {
       </aside>
 
       {/* ── Main ── */}
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section id="boardroom-section" aria-label={`${tab} section`} className="flex min-w-0 flex-1 flex-col">
 
         {/* Header */}
         <header className="flex shrink-0 items-center justify-between gap-3 border-b border-stone-300 bg-white px-4 py-3 dark:border-white/15 dark:bg-[#192321]">
@@ -777,8 +791,9 @@ export function BoardroomApp() {
               <div ref={scrollRef} onScroll={handleScroll} style={{ overflowAnchor: "none" }} className="relative min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {!messages.length && !typingAdvisor && !busy ? (
                   <div className="mx-auto mt-16 max-w-lg text-center">
-                    <h3 className="font-serif text-3xl font-bold">Ask the room.</h3>
-                    <p className="mt-2 text-stone-500 text-sm">Upload your business docs, ask a real question. Tony routes the room, advisors speak, Chanos challenges, Tony closes with the decision.</p>
+                    <h3 className="font-serif text-3xl font-bold">A second opinion is useful. A room that challenges it is better.</h3>
+                    <p className="mt-3 text-stone-600 text-sm leading-relaxed">AI Boardroom helps you work through a business decision with several AI advisor perspectives instead of accepting one chatbot’s first answer. Tony gathers the problem, relevant advisors weigh in, Chanos challenges the assumptions, and Tony brings the discussion back to a decision you can act on.</p>
+                    <p className="mt-3 text-stone-600 text-sm leading-relaxed">Start with the decision you’re stuck on and the constraints that matter. Add your profile or business documents for context, or choose one advisor for a focused conversation. These are AI roles, not the real people they are inspired by, and their answers still need your judgment.</p>
                     <div className="mt-6 flex justify-center gap-3">
                       <button onClick={runMorningBrief} disabled={busy} className="flex items-center gap-2 border border-stone-300 bg-white px-4 py-2 text-sm hover:border-teal hover:text-teal transition-colors disabled:opacity-50">
                         <Sun size={14} /> Morning Brief
@@ -891,14 +906,14 @@ export function BoardroomApp() {
                   <div className="mx-2 h-4 w-px bg-stone-200" />
                   <span className="text-xs text-stone-400">Depth</span>
                   {(["quick", "normal", "deep"] as const).map(d => (
-                    <button key={d} onClick={() => setMode(m => ({ ...m, depth: d }))} className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${mode.depth === d ? "bg-ink text-white" : "text-stone-500 hover:bg-stone-200"}`}>
+                    <button key={d} aria-label={`${d} response depth`} aria-pressed={mode.depth === d} onClick={() => setMode(m => ({ ...m, depth: d }))} className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${mode.depth === d ? "bg-ink text-white" : "text-stone-500 hover:bg-stone-200"}`}>
                       {d}
                     </button>
                   ))}
                   <div className="mx-2 h-4 w-px bg-stone-200" />
                   <span className="text-xs text-stone-400">Lane</span>
                   {(["business", "life", "technical"] as const).map(l => (
-                    <button key={l} onClick={() => setMode(m => ({ ...m, lane: l }))} className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${mode.lane === l ? "bg-ink text-white" : "text-stone-500 hover:bg-stone-200"}`}>
+                    <button key={l} aria-label={`${l} discussion lane`} aria-pressed={mode.lane === l} onClick={() => setMode(m => ({ ...m, lane: l }))} className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${mode.lane === l ? "bg-ink text-white" : "text-stone-500 hover:bg-stone-200"}`}>
                       {l}
                     </button>
                   ))}
@@ -910,14 +925,16 @@ export function BoardroomApp() {
                 {/* Input row */}
                 <div className="p-3">
                   <textarea
+                    aria-label="Your question for the Boardroom"
                     className="h-20 w-full resize-none border border-stone-300 p-3 text-sm focus:border-teal focus:outline-none"
                     value={composer}
                     onChange={(e) => setComposer(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendMessage(); } }}
                     placeholder={channel === "brainstorming" ? "Ask the Boardroom…  ⌘↵ to send" : `Work with ${channel}…  ⌘↵ to send`}
                   />
                   <div className="mt-2 flex items-center gap-2">
                     <input
+                      aria-label="Optional DeepSeek API key"
                       className="min-w-0 flex-1 border border-stone-200 px-3 py-1.5 text-xs text-stone-500 focus:outline-none"
                       type="password"
                       value={clientKey}

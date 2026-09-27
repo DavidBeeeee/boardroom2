@@ -58,6 +58,11 @@ body {
   margin: 0;
 }
 
+.boardroom-shell :is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 3px solid #e67d55;
+  outline-offset: 3px;
+}
+
 button,
 input,
 textarea,
