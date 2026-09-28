@@ -1,6 +1,7 @@
 import type { AdvisorName, BoardroomTurn, GeneratedCard, Message, ModeContext } from "@/lib/types";
 import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket, BOARDROOM_GUARDRAILS } from "./advisors";
 import { callDeepSeek, type ChatMessage } from "./deepseek";
+import type { BoardroomLogger, LogMeta } from "./logging";
 
 // ── Session State (passed between frontend and API stages) ────────────────────
 
@@ -57,17 +58,41 @@ function personalizeForCeo(content: string, ceoName = "CEO") {
     .replace(/__BOARDROOM_DAVID_ALLEN__/g, "David Allen");
 }
 
-async function llm(messages: ChatMessage[], clientApiKey?: string, ceoName?: string): Promise<string> {
+async function llm(messages: ChatMessage[], clientApiKey?: string, ceoName?: string, meta?: LogMeta): Promise<string> {
+  const logger = meta?.logger;
   return callDeepSeek(messages.map(message => ({
     ...message,
     content: personalizeForCeo(message.content, ceoName),
-  })), clientApiKey);
+  })), clientApiKey, logger ? {
+    stage: meta?.stage,
+    speaker: meta?.speaker,
+    record: (result) => logger.deepseek({
+      stage: meta?.stage,
+      speaker: meta?.speaker,
+      status: result.status,
+      model: result.model,
+      latencyMs: result.latencyMs,
+      usage: result.usage,
+      detail: result.error ? { error: result.error, requestedModel: result.requestedModel } : { requestedModel: result.requestedModel },
+    }),
+  } : undefined);
 }
 
-async function structured<T>(messages: ChatMessage[], clientApiKey: string | undefined, fallback: T): Promise<T> {
-  const raw = await llm(messages, clientApiKey);
+// Records that a DeepSeek call returned but its JSON could not be parsed and a
+// fallback was used — the third DeepSeek outcome the observability layer tracks.
+function logParseFallback(meta: LogMeta | undefined, note: string) {
+  meta?.logger?.deepseek({
+    stage: meta?.stage,
+    speaker: meta?.speaker,
+    status: "parse_fallback",
+    detail: { note },
+  });
+}
+
+async function structured<T>(messages: ChatMessage[], clientApiKey: string | undefined, fallback: T, meta?: LogMeta): Promise<T> {
+  const raw = await llm(messages, clientApiKey, undefined, meta);
   try { return parseJson<T>(raw); }
-  catch { return fallback; }
+  catch { logParseFallback(meta, "structured() JSON parse failed"); return fallback; }
 }
 
 export function turnsToContext(turns: BoardroomTurn[]): string {
@@ -152,6 +177,7 @@ export async function runTonyIntake(input: {
   tonyOnly?: boolean;
   activeAdvisor?: AdvisorName;
   ceoName?: string;
+  log?: BoardroomLogger;
 }): Promise<{ turns: BoardroomTurn[]; sessionState: SessionState | null; nextStage: StageResult["nextStage"] | "done" | "clarify" | "one_to_one" }> {
 
   // 1:1 advisor session — run and finish immediately
@@ -172,7 +198,7 @@ export async function runTonyIntake(input: {
       },
       ...baseHistory,
       { role: "user", content: input.userPrompt }
-    ], input.clientApiKey, input.ceoName);
+    ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_only", speaker: "Tony" });
 
     return {
       turns: [{ speaker: "Tony", stage: "tony_only", content: raw }],
@@ -239,11 +265,11 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
       },
       ...baseHistory,
       { role: "user", content: "You are Tony. Route the team to build the plan quoted above. Assign each advisor a specific piece of it. Output your brief routing message then the JSON:" }
-    ], input.clientApiKey, input.ceoName);
+    ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_intake", speaker: "Tony" });
 
     let routingData = fallbackRouting;
     try { routingData = { ...fallbackRouting, ...parseJson<RoutingData>(rawRouting) }; }
-    catch { /* keep fallback */ }
+    catch { logParseFallback({ logger: input.log, stage: "tony_intake", speaker: "Tony" }, "follow-up routing JSON parse failed"); /* keep fallback */ }
 
     const codeIdx = rawRouting.indexOf("```");
     let routingMessage = codeIdx > 0
@@ -338,7 +364,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     },
     ...baseHistory,
     { role: "user", content: input.userPrompt }
-  ], input.clientApiKey, input.ceoName);
+  ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_intake", speaker: "Tony" });
 
   // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
   // If mustRoute is true, Tony should not clarify — force routing.
@@ -374,7 +400,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
   // Extract routing JSON from the code block
   let routing = fallbackRouting;
   try { routing = { ...fallbackRouting, ...parseJson<RoutingData>(rawTonyResponse) }; }
-  catch { /* keep fallback */ }
+  catch { logParseFallback({ logger: input.log, stage: "tony_intake", speaker: "Tony" }, "initial routing JSON parse failed"); /* keep fallback */ }
 
   // Extract Tony's message = everything before the first ```
   const codeBlockIdx = rawTonyResponse.indexOf("```");
@@ -431,6 +457,7 @@ export async function runAdvisorRound(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
   const round = sessionState.currentRound + 1;
@@ -501,7 +528,7 @@ Plain text only — no JSON, no code blocks.
 150-300 words. Full personality. Bold key phrases. Emojis. No --- dividers. No ## headers.`
         },
         { role: "user", content: `You are ${advisor}. Respond now in ${advisor}'s voice only. Do not reproduce the conversation history. Write your response:` }
-      ], input.clientApiKey, input.ceoName);
+      ], input.clientApiKey, input.ceoName, { logger: input.log, stage: `advisor_round_${round}`, speaker: advisor });
 
       return { advisor, message: message || fallbackAdvisorTurn(advisor, input.ceoName) };
     })
@@ -537,6 +564,7 @@ export async function runChanosRound(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
   const round = sessionState.currentChanosRound + 1;
@@ -592,7 +620,7 @@ CRITICAL: Write ONLY Chanos's response. Do NOT reproduce the conversation above.
 NO --- dividers. NO ## headers. 200-350 words. Prosecutorial and precise — find the flaw in every argument, not just the obvious one.`
   },
   { role: "user", content: "You are Chanos. Short the advisors now. Write only Chanos's response:" }
-  ], input.clientApiKey, input.ceoName);
+  ], input.clientApiKey, input.ceoName, { logger: input.log, stage: `chanos_round_${round}`, speaker: "Chanos" });
 
   const turn: BoardroomTurn = { speaker: "Chanos", stage: `chanos_round_${round}`, content: raw };
 
@@ -620,6 +648,7 @@ export async function runTonyClose(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
 
@@ -679,7 +708,7 @@ THE CHECKPOINT: how David will know this worked]
 \`\`\``
   },
   { role: "user", content: "You are Tony. Write your closing synthesis now. Do not reproduce any prior messages. Start with THE CALL:" }
-  ], input.clientApiKey, input.ceoName);
+  ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_close", speaker: "Tony" });
 
   // Extract Tony's close message — everything before the ```json block
   const codeBlockIdx = rawClose.indexOf("```");
@@ -707,7 +736,7 @@ THE CHECKPOINT: how David will know this worked]
     const parsed = parseJson<{ decision?: string; actionCards?: GeneratedCard[] }>(rawClose);
     if (parsed.decision) decision = parsed.decision;
     if (parsed.actionCards) cards = parsed.actionCards;
-  } catch { /* no cards if JSON fails */ }
+  } catch { logParseFallback({ logger: input.log, stage: "tony_close", speaker: "Tony" }, "close cards JSON parse failed"); /* no cards if JSON fails */ }
 
   const turn: BoardroomTurn = {
     speaker: "Tony",
@@ -728,7 +757,7 @@ THE CHECKPOINT: how David will know this worked]
 
 async function runAdvisorOneToOne(
   advisor: AdvisorName,
-  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; ceoName?: string; }
+  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; ceoName?: string; log?: BoardroomLogger; }
 ) {
   const raw = await llm([
     {
@@ -737,7 +766,7 @@ async function runAdvisorOneToOne(
     },
     ...historyMessages(input.history),
     { role: "user", content: input.userPrompt }
-  ], input.clientApiKey, input.ceoName);
+  ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "advisor_one_to_one", speaker: advisor });
 
   return {
     turns: [{ speaker: advisor, stage: "advisor_one_to_one", content: raw }],
@@ -757,6 +786,7 @@ export async function runBoardroomEngine(input: {
   activeAdvisor?: AdvisorName;
   tonyOnly?: boolean;
   ceoName?: string;
+  log?: BoardroomLogger;
 }) {
   if (input.activeAdvisor) {
     const raw = await llm([
@@ -766,7 +796,7 @@ export async function runBoardroomEngine(input: {
       },
       ...historyMessages(input.history),
       { role: "user", content: input.userPrompt }
-    ], input.clientApiKey, input.ceoName);
+    ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "advisor_one_to_one", speaker: input.activeAdvisor });
     return { turns: [{ speaker: input.activeAdvisor, stage: "advisor_one_to_one", content: raw }], cards: [] as GeneratedCard[], tension: "" };
   }
   return { turns: [] as BoardroomTurn[], cards: [] as GeneratedCard[], tension: "" };

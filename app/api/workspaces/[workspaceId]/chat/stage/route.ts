@@ -4,6 +4,8 @@ import { buildBoardroomContext } from "@/lib/boardroom/context";
 import { runAdvisorRound, runChanosRound, runTonyClose, normalizeCards } from "@/lib/boardroom/engine";
 import type { SessionState } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
+import { createBoardroomLogger } from "@/lib/boardroom/logging";
+import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
 import type { AdvisorCard, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -19,6 +21,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
   }
 
+  // Server-side DeepSeek cost/usage bound (Developer 99).
+  try {
+    await assertDeepSeekBudget(authed.supabase, workspaceId);
+  } catch (error) {
+    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
+    throw error;
+  }
+
   const body = await req.json();
   const conversationId = String(body.conversationId || "");
   const nextStage = String(body.nextStage || "");
@@ -28,6 +38,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   if (!conversationId || !nextStage || !sessionState) {
     return jsonError("Missing conversationId, nextStage, or sessionState.", 400);
   }
+
+  const logger = createBoardroomLogger(authed.supabase, { workspaceId, conversationId, userId: authed.userId });
 
   // Load fresh context and history
   const [settings, profile, documents, memory, previousMessages] = await Promise.all([
@@ -57,6 +69,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
     sessionState,
     ceoName: profile.data?.preferred_name || "CEO",
+    log: logger,
   };
 
   try {
@@ -72,6 +85,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       return jsonError(`Unknown stage: ${nextStage}`, 400);
     }
 
+    // Record each conversation turn the engine produced.
+    for (const turn of result.turns) {
+      logger.turn({ stage: turn.stage, speaker: turn.speaker, detail: { length: turn.content.length } });
+    }
+
     // Save this stage's messages to DB
     const messageRows = result.turns.map(turn => ({
       workspace_id: workspaceId,
@@ -84,7 +102,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
     const { data: insertedMessages, error: messageError } = await authed.supabase
       .from("boardroom_messages").insert(messageRows).select("*");
-    if (messageError) return jsonError(messageError.message, 500);
+    if (messageError) {
+      logger.stateWrite({ table: "boardroom_messages", status: "error", stage: nextStage, detail: { error: messageError.message, count: messageRows.length } });
+      await logger.flush();
+      return jsonError(messageError.message, 500);
+    }
+    logger.stateWrite({ table: "boardroom_messages", stage: nextStage, detail: { count: messageRows.length } });
 
     // Save cards and memory on final close
     let insertedCards: AdvisorCard[] = [];
@@ -112,6 +135,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
           })))
           .select("*");
         if (!cardError && cards) insertedCards = cards as AdvisorCard[];
+        logger.stateWrite({ table: "boardroom_advisor_cards", status: cardError ? "error" : "ok", stage: "tony_close", detail: cardError ? { error: cardError.message } : { count: result.cards.length } });
       }
 
       // Save session summary to memory
@@ -129,9 +153,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
           ].filter(Boolean).join("\n"),
           metadata: { conversationId, tension: sessionState.tension, source: "stage_route" }
         });
+        logger.stateWrite({ table: "boardroom_memory_entries", stage: "session_summary" });
       }
     }
 
+    await logger.flush();
     return NextResponse.json({
       messages: insertedMessages || [],
       cards: insertedCards,
@@ -141,10 +167,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   } catch (error) {
     const message = error instanceof Error ? error.message : "Stage error.";
+    logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "error", detail: { error: message } });
     await authed.supabase.from("boardroom_messages").insert({
       workspace_id: workspaceId, conversation_id: conversationId,
       role: "system", speaker: "System", content: message, stage: "error"
     });
+    await logger.flush();
     return jsonError(message, 500);
   }
 }

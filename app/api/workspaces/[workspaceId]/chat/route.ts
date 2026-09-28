@@ -3,6 +3,8 @@ import { createRequestSupabase, ensureWorkspaceMember, jsonError } from "@/lib/s
 import { buildBoardroomContext } from "@/lib/boardroom/context";
 import { runTonyIntake } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
+import { createBoardroomLogger } from "@/lib/boardroom/logging";
+import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
 import type { AdvisorName, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -16,6 +18,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+  }
+
+  // Server-side DeepSeek cost/usage bound (Developer 99): refuse before spending
+  // when this workspace is over its rolling window cap.
+  try {
+    await assertDeepSeekBudget(authed.supabase, workspaceId);
+  } catch (error) {
+    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
+    throw error;
   }
 
   const body = await req.json();
@@ -46,6 +57,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     conversationId = data.id;
   }
 
+  // Observability: every turn, DeepSeek call and state write from here on is logged.
+  const logger = createBoardroomLogger(authed.supabase, { workspaceId, conversationId, userId: authed.userId });
+  if (!String(body.conversationId || "")) {
+    logger.stateWrite({ table: "boardroom_conversations", stage: "conversation_create", detail: { channel } });
+  }
+
   // Load workspace context
   const [settings, profile, documents, memory, previousMessages, activeCard] = await Promise.all([
     authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
@@ -68,6 +85,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     .select("*")
     .single();
   if (userMessageError) return jsonError(userMessageError.message, 500);
+  logger.stateWrite({ table: "boardroom_messages", stage: "user_prompt", detail: { role: "user" } });
 
   const contextText = buildBoardroomContext({
     guardrails: settings.data?.guardrails || "",
@@ -89,7 +107,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       activeAdvisor,
       tonyOnly: body.tonyOnly === true,
       ceoName: profile.data?.preferred_name || "CEO",
+      log: logger,
     });
+
+    // Record each conversation turn the engine produced.
+    for (const turn of result.turns) {
+      logger.turn({ stage: turn.stage, speaker: turn.speaker, detail: { length: turn.content.length } });
+    }
 
     // Save Tony's message(s) to DB
     const messageRows = result.turns.map(turn => ({
@@ -103,7 +127,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
     const { data: insertedMessages, error: messageError } = await authed.supabase
       .from("boardroom_messages").insert(messageRows).select("*");
-    if (messageError) return jsonError(messageError.message, 500);
+    if (messageError) {
+      logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "assistant_turns", detail: { error: messageError.message, count: messageRows.length } });
+      await logger.flush();
+      return jsonError(messageError.message, 500);
+    }
+    logger.stateWrite({ table: "boardroom_messages", stage: "assistant_turns", detail: { count: messageRows.length } });
 
     // For 1:1 sessions or done sessions, also save memory
     if (result.nextStage === "done" || result.nextStage === "clarify") {
@@ -115,11 +144,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
           content: `Prompt: ${text.slice(0, 300)}\nResponse: ${lastMsg.content.slice(0, 800)}`,
           metadata: { conversationId, source: "chat_route" }
         }).throwOnError();
+        logger.stateWrite({ table: "boardroom_memory_entries", stage: "session_summary" });
       }
     }
 
     await authed.supabase.from("boardroom_conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
+    logger.stateWrite({ table: "boardroom_conversations", stage: "mode_update" });
 
+    await logger.flush();
     return NextResponse.json({
       conversationId,
       userMessage,
@@ -131,10 +163,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   } catch (error) {
     const message = error instanceof Error ? error.message : "Boardroom error.";
+    logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "error", detail: { error: message } });
     await authed.supabase.from("boardroom_messages").insert({
       workspace_id: workspaceId, conversation_id: conversationId,
       role: "system", speaker: "System", content: message, stage: "error"
     });
+    await logger.flush();
     return jsonError(message, 500);
   }
 }
