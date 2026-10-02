@@ -6,6 +6,7 @@ import type { SessionState } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
 import { createBoardroomLogger } from "@/lib/boardroom/logging";
 import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
+import { decisionMetadataForTurn } from "@/lib/boardroom/decision";
 import type { AdvisorCard, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -98,6 +99,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       speaker: turn.speaker,
       content: turn.content,
       stage: turn.stage,
+      metadata: decisionMetadataForTurn(turn),
     }));
 
     const { data: insertedMessages, error: messageError } = await authed.supabase

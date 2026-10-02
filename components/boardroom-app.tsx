@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ClipboardCopy,
   FileText,
+  HelpCircle,
   Home,
   LogOut,
   Menu,
@@ -25,7 +26,9 @@ import {
 } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import { boardroomPath } from "@/lib/boardroom/path";
+import { isDecisionReachedMessage } from "@/lib/boardroom/decision";
 import { BoardroomProfileForm, type BoardroomProfileDraft } from "@/components/boardroom-profile-form";
+import { BoardroomHelp } from "@/components/boardroom-help";
 import type { AdvisorCard, BoardroomProfile, Conversation, DocumentRecord, Message, ModeContext, Workspace } from "@/lib/types";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -62,7 +65,7 @@ function stageColor(stage: string, speaker?: string): string {
 
 function stageTag(stage: string, speaker: string): string | null {
   if (stage === "tony_intake") return "intake";
-  if (stage === "tony_close") return "decision";
+  if (stage === "tony_close") return "closing turn";
   if (stage === "tony_only") return "response";
   if (stage.startsWith("chanos_round")) return `challenge · round ${stage.split("_").pop()}`;
   if (stage.startsWith("advisor_round")) return `round ${stage.split("_").pop()}`;
@@ -80,6 +83,7 @@ type WorkspaceBundle = {
   workspace: Workspace;
   documents: DocumentRecord[];
   conversations: Conversation[];
+  decisionReachedConversationIds: string[];
   cards: AdvisorCard[];
   settings: { guardrails?: string } | null;
   profile: BoardroomProfile | null;
@@ -116,7 +120,7 @@ export function BoardroomApp() {
   const [tonyOnly, setTonyOnly] = useState(false);
   const [typingAdvisor, setTypingAdvisor] = useState<string | null>(null);
   const [activeCardId, setActiveCardId] = useState("");
-  const [tab, setTab] = useState<"chat" | "cards" | "docs" | "profile" | "settings">("chat");
+  const [tab, setTab] = useState<"chat" | "cards" | "docs" | "profile" | "settings" | "help">("chat");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [autoScroll, setAutoScroll] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -584,6 +588,10 @@ export function BoardroomApp() {
   // ── Main App ──────────────────────────────────────────────────────────────────
 
   const activeCards = bundle?.cards?.filter(c => c.status !== "trash") ?? [];
+  const decisionConversations = bundle?.conversations.filter(conversation =>
+    bundle.decisionReachedConversationIds.includes(conversation.id)
+  ) ?? [];
+  const currentDecisionReached = messages.some(isDecisionReachedMessage);
 
   const workCards = activeCards.length ? activeCards.map((card) => (
     <div key={card.id} className={`mb-3 border p-3 ${card.status === "active" ? "border-teal/40 bg-teal/5" : "border-stone-200"}`}>
@@ -675,6 +683,9 @@ export function BoardroomApp() {
             <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "settings" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("settings"); setMobileNavOpen(false); }}>
               <Settings size={14} /> Settings
             </button>
+            <button className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${tab === "help" ? "bg-white/15 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`} onClick={() => { setTab("help"); setMobileNavOpen(false); }}>
+              <HelpCircle size={14} /> Help &amp; support
+            </button>
           </div>
 
           {/* Channels */}
@@ -721,11 +732,26 @@ export function BoardroomApp() {
               </button>
             );
           })}
+          {decisionConversations.length > 0 && (
+            <div className="mt-5 border-t border-white/10 pt-3">
+              <div className="mb-2 px-3 text-xs font-semibold uppercase tracking-widest text-white/40">Decisions reached</div>
+              {decisionConversations.slice(0, 5).map(conversation => (
+                <button
+                  key={conversation.id}
+                  className="w-full px-3 py-2 text-left text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                  onClick={() => { setTab("chat"); setMobileNavOpen(false); void loadConversation(workspaceId, conversation.id); }}
+                >
+                  <CheckCircle2 size={12} className="mr-1.5 inline text-green-400" />
+                  {conversation.title} · {new Date(conversation.updated_at).toLocaleDateString()}
+                </button>
+              ))}
+            </div>
+          )}
         </nav>
 
         <div className="space-y-1 border-t border-white/10 p-3">
           <a className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white" href="/"><Home size={14} /> Studio home</a>
-          <a className="block px-3 py-2 text-sm text-white/80 underline" href="mailto:contact@davidbee.me?subject=AI%20Boardroom%20help">Contact David for help</a>
+          <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-white/70 hover:bg-white/10 hover:text-white" onClick={() => { setTab("help"); setMobileNavOpen(false); }}><HelpCircle size={14} /> Get help</button>
           <details className="px-3 py-2 text-sm text-white/80">
             <summary className="cursor-pointer">How this room uses your data</summary>
             <p className="mt-2 leading-relaxed">Your conversations and uploaded document content are stored with your workspace. Access is checked against workspace membership. Relevant context is sent to DeepSeek to generate advisor responses, so avoid uploading secrets or material you cannot share with an AI provider.</p>
@@ -749,7 +775,7 @@ export function BoardroomApp() {
             <button className="grid h-9 w-9 shrink-0 place-items-center border border-stone-300 md:hidden dark:border-white/15" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={18} /></button>
             <div className="min-w-0">
             <h2 className="font-serif text-xl font-bold">
-              {tab === "profile" ? "My Profile" : tab === "docs" ? "Documents" : tab === "cards" ? "Work Cards" : tab === "settings" ? "Settings" : channel === "brainstorming" ? "# Boardroom" : `@ ${channel}`}
+              {tab === "profile" ? "My Profile" : tab === "docs" ? "Documents" : tab === "cards" ? "Work Cards" : tab === "settings" ? "Settings" : tab === "help" ? "Help & support" : channel === "brainstorming" ? "# Boardroom" : `@ ${channel}`}
             </h2>
             <p className="text-xs text-stone-500">
               {tab === "profile" ? `The team knows you as ${bundle?.profile?.preferred_name || "CEO"}.` : channel === "brainstorming"
@@ -759,6 +785,7 @@ export function BoardroomApp() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {tab === "chat" && currentDecisionReached && <span className="flex items-center gap-1 text-xs font-semibold text-green-700" role="status"><CheckCircle2 size={13} /> Decision reached</span>}
             {messages.length > 0 && (
               <button
                 onClick={copyAllMessages}
@@ -837,6 +864,9 @@ export function BoardroomApp() {
                               </span>
                             )}
                           </span>
+                          {isDecisionReachedMessage(message) && (
+                            <span className="flex items-center gap-1 text-xs font-semibold text-green-700"><CheckCircle2 size={13} /> Decision reached</span>
+                          )}
                           <button
                             onClick={() => copyText(message.content)}
                             className="ml-auto opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity text-stone-400"
@@ -1009,6 +1039,9 @@ export function BoardroomApp() {
             <BoardroomProfileForm profile={bundle?.profile} onSave={saveProfile} onCancel={() => setTab("chat")} />
           </div>
         ) : null}
+
+        {/* Help tab */}
+        {tab === "help" ? <BoardroomHelp /> : null}
 
         {/* Settings tab */}
         {tab === "settings" ? (
