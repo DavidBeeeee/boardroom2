@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey } from "@/lib/supabase/server";
 import { buildBoardroomContext } from "@/lib/boardroom/context";
 import { runTonyIntake } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
 import { createBoardroomLogger } from "@/lib/boardroom/logging";
 import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
+import { createSupabaseIdempotencyStore, withIdempotency } from "@/lib/boardroom/idempotency";
 import type { AdvisorName, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -13,20 +14,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   const { workspaceId } = await ctx.params;
   const authed = await createRequestSupabase(req);
   if (authed instanceof NextResponse) return authed;
+  const session = authed;
 
   try {
-    await ensureWorkspaceMember(authed.supabase, workspaceId);
+    await ensureWorkspaceMember(session.supabase, workspaceId);
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
-  }
-
-  // Server-side DeepSeek cost/usage bound (Developer 99): refuse before spending
-  // when this workspace is over its rolling window cap.
-  try {
-    await assertDeepSeekBudget(authed.supabase, workspaceId);
-  } catch (error) {
-    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
-    throw error;
   }
 
   const body = await req.json();
@@ -39,52 +32,83 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     ? channel as AdvisorName
     : undefined;
 
+  // Idempotency: a resent or double-clicked chat turn claims the same key and
+  // replays the first response instead of re-running generation or re-inserting
+  // rows (Developer 13,15,16,33). The whole mutation (conversation create,
+  // DeepSeek, message + memory inserts, mode update) runs inside the claim, so a
+  // duplicate bills DeepSeek zero times and writes nothing.
+  const store = createSupabaseIdempotencyStore(session.supabase);
+  const idempotencyKey = requestIdempotencyKey(req);
+
+  let outcome;
+  try {
+    outcome = await withIdempotency(store, { workspaceId, scope: "chat", key: idempotencyKey, userId: session.userId }, async () => {
+      // Server-side DeepSeek cost/usage bound (Developer 99): refuse before
+      // spending when this workspace is over its rolling window cap. Inside the
+      // claim so a replay never re-checks or re-bills.
+      await assertDeepSeekBudget(session.supabase, workspaceId);
+
+      return await runChatTurn();
+    });
+  } catch (error) {
+    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
+    if (error instanceof ChatTurnError) return jsonError(error.message, error.status);
+    throw error;
+  }
+
+  if (outcome.kind === "in_flight") {
+    return NextResponse.json({ error: "This message is already being processed.", duplicate: true }, { status: 409 });
+  }
+  return NextResponse.json(outcome.response);
+
+  // The full chat-turn mutation, run exactly once per idempotency key.
+  async function runChatTurn() {
   // Create or reuse conversation
   let conversationId = String(body.conversationId || "");
   if (!conversationId) {
-    const { data, error } = await authed.supabase
+    const { data, error } = await session.supabase
       .from("boardroom_conversations")
       .insert({
         workspace_id: workspaceId,
         title: channel === "brainstorming" ? "Boardroom" : `${channel} 1:1`,
         channel,
         mode,
-        created_by: authed.userId
+        created_by: session.userId
       })
       .select("*")
       .single();
-    if (error) return jsonError(error.message, 500);
+    if (error) throw new ChatTurnError(error.message, 500);
     conversationId = data.id;
   }
 
   // Observability: every turn, DeepSeek call and state write from here on is logged.
-  const logger = createBoardroomLogger(authed.supabase, { workspaceId, conversationId, userId: authed.userId });
+  const logger = createBoardroomLogger(session.supabase, { workspaceId, conversationId, userId: session.userId });
   if (!String(body.conversationId || "")) {
     logger.stateWrite({ table: "boardroom_conversations", stage: "conversation_create", detail: { channel } });
   }
 
   // Load workspace context
   const [settings, profile, documents, memory, previousMessages, activeCard] = await Promise.all([
-    authed.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
-    authed.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
-    authed.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
-    authed.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(24),
+    session.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    session.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    session.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
+    session.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
+    session.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(24),
     body.cardId
-      ? authed.supabase.from("boardroom_advisor_cards").select("title,advisor,context,desired_output").eq("workspace_id", workspaceId).eq("id", String(body.cardId)).maybeSingle()
+      ? session.supabase.from("boardroom_advisor_cards").select("title,advisor,context,desired_output").eq("workspace_id", workspaceId).eq("id", String(body.cardId)).maybeSingle()
       : Promise.resolve({ data: null, error: null })
   ]);
 
   const loadError = settings.error || profile.error || documents.error || memory.error || previousMessages.error || activeCard.error;
-  if (loadError) return jsonError(loadError.message, 500);
+  if (loadError) throw new ChatTurnError(loadError.message, 500);
 
   // Save user message to DB
-  const { data: userMessage, error: userMessageError } = await authed.supabase
+  const { data: userMessage, error: userMessageError } = await session.supabase
     .from("boardroom_messages")
     .insert({ workspace_id: workspaceId, conversation_id: conversationId, role: "user", speaker: "You", content: text, stage: "user_prompt" })
     .select("*")
     .single();
-  if (userMessageError) return jsonError(userMessageError.message, 500);
+  if (userMessageError) throw new ChatTurnError(userMessageError.message, 500);
   logger.stateWrite({ table: "boardroom_messages", stage: "user_prompt", detail: { role: "user" } });
 
   const contextText = buildBoardroomContext({
@@ -125,12 +149,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       stage: turn.stage,
     }));
 
-    const { data: insertedMessages, error: messageError } = await authed.supabase
+    const { data: insertedMessages, error: messageError } = await session.supabase
       .from("boardroom_messages").insert(messageRows).select("*");
     if (messageError) {
       logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "assistant_turns", detail: { error: messageError.message, count: messageRows.length } });
       await logger.flush();
-      return jsonError(messageError.message, 500);
+      throw new ChatTurnError(messageError.message, 500);
     }
     logger.stateWrite({ table: "boardroom_messages", stage: "assistant_turns", detail: { count: messageRows.length } });
 
@@ -138,7 +162,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     if (result.nextStage === "done" || result.nextStage === "clarify") {
       const lastMsg = result.turns.at(-1);
       if (lastMsg) {
-        await authed.supabase.from("boardroom_memory_entries").insert({
+        await session.supabase.from("boardroom_memory_entries").insert({
           workspace_id: workspaceId,
           kind: "session_summary",
           content: `Prompt: ${text.slice(0, 300)}\nResponse: ${lastMsg.content.slice(0, 800)}`,
@@ -148,27 +172,41 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       }
     }
 
-    await authed.supabase.from("boardroom_conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
+    await session.supabase.from("boardroom_conversations").update({ mode }).eq("workspace_id", workspaceId).eq("id", conversationId);
     logger.stateWrite({ table: "boardroom_conversations", stage: "mode_update" });
 
     await logger.flush();
-    return NextResponse.json({
+    return {
       conversationId,
       userMessage,
       messages: insertedMessages || [],
       cards: [],
       nextStage: result.nextStage,
       sessionState: result.sessionState,
-    });
+    };
 
   } catch (error) {
+    if (error instanceof ChatTurnError) throw error;
     const message = error instanceof Error ? error.message : "Boardroom error.";
     logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "error", detail: { error: message } });
-    await authed.supabase.from("boardroom_messages").insert({
+    await session.supabase.from("boardroom_messages").insert({
       workspace_id: workspaceId, conversation_id: conversationId,
       role: "system", speaker: "System", content: message, stage: "error"
     });
     await logger.flush();
-    return jsonError(message, 500);
+    throw new ChatTurnError(message, 500);
+  }
+  }
+}
+
+// A failure inside the idempotent chat turn, carrying the HTTP status to return.
+// Thrown rather than returned so withIdempotency releases the claimed key and a
+// genuine retry can run.
+class ChatTurnError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ChatTurnError";
+    this.status = status;
   }
 }

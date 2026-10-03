@@ -80,6 +80,7 @@ export type AdvisorCard = {
   inputs: Record<string, unknown>;
   external_target: string;
   artifact: string;
+  version: number;
   created_at: string;
   updated_at: string;
 };

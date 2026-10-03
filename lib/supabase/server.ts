@@ -1,5 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeIdempotencyKey } from "@/lib/boardroom/idempotency";
 
 export type AuthedSupabase = {
   supabase: SupabaseClient;
@@ -9,6 +11,14 @@ export type AuthedSupabase = {
 
 export function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
+}
+
+// The idempotency key for a member-initiated write. A stable client-supplied
+// `Idempotency-Key` header makes a resent request a no-op; when it is absent or
+// malformed we fall back to a random key, which simply means this request is not
+// deduplicated (old-client-safe) rather than failing it.
+export function requestIdempotencyKey(req: NextRequest): string {
+  return normalizeIdempotencyKey(req.headers.get("idempotency-key")) ?? randomUUID();
 }
 
 export async function createRequestSupabase(req: NextRequest): Promise<AuthedSupabase | NextResponse> {

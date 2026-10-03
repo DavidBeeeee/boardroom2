@@ -201,8 +201,21 @@ export function BoardroomApp() {
     }
     const res = await fetch(boardroomPath(path), { ...init, headers: requestHeaders });
     const payload = await res.json().catch(() => ({}));
+    // 409 carries structured state the caller reconciles (a duplicate request
+    // already in flight, or a stale card version), so it is returned, not thrown.
+    if (res.status === 409) return payload;
     if (!res.ok) throw new Error(payload.error || `Request failed: ${res.status}`);
     return payload;
+  }
+
+  // A stable key per member-initiated write, so a resent or double-clicked
+  // request is deduplicated server-side instead of duplicating rows or re-billing.
+  function newIdempotencyKey() {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
   }
 
   // ── Workspace ───────────────────────────────────────────────────────────────
@@ -309,6 +322,7 @@ export function BoardroomApp() {
       try {
         const stagePayload = await api(`/api/workspaces/${workspaceId}/chat/stage`, {
           method: "POST",
+          headers: { "Idempotency-Key": newIdempotencyKey() },
           body: JSON.stringify({
             conversationId: convId,
             nextStage: currentStage,
@@ -317,6 +331,13 @@ export function BoardroomApp() {
             clientApiKey: clientKey || undefined,
           }),
         });
+
+        // A duplicate stage still in flight: stop this loop and let the first
+        // request finish delivering the stage.
+        if (stagePayload.duplicate) {
+          flushSync(() => setTypingAdvisor(null));
+          break;
+        }
 
         flushSync(() => setTypingAdvisor(null));
         await displayMessagesWithTyping(stagePayload.messages || []);
@@ -385,6 +406,7 @@ export function BoardroomApp() {
     try {
       const payload = await api(`/api/workspaces/${workspaceId}/chat`, {
         method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey() },
         body: JSON.stringify({
           text,
           conversationId,
@@ -395,6 +417,16 @@ export function BoardroomApp() {
           tonyOnly: (overrideTonyOnly ?? tonyOnly) && sendChannel === "brainstorming",
         })
       });
+
+      // A duplicate send still in flight: drop the optimistic pending bubble and
+      // let the first request deliver the real messages.
+      if (payload.duplicate) {
+        flushSync(() => {
+          setTypingAdvisor(null);
+          setMessages(current => current.filter(m => m.id !== pendingId));
+        });
+        return;
+      }
 
       // Update conversationId if new conversation was created, and save per-channel
       if (payload.conversationId && payload.conversationId !== conversationId) {
@@ -467,7 +499,15 @@ export function BoardroomApp() {
     try {
       const form = new FormData();
       form.append("file", file);
-      await api(`/api/workspaces/${workspaceId}/documents`, { method: "POST", body: form });
+      const payload = await api(`/api/workspaces/${workspaceId}/documents`, {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey() },
+        body: form,
+      });
+      if (payload.duplicate) {
+        showToast("That upload is already in progress.");
+        return;
+      }
       await loadWorkspace(workspaceId);
       showToast(`✓ Uploaded ${file.name}`);
     } catch (error) {
@@ -479,12 +519,19 @@ export function BoardroomApp() {
 
   // ── Cards ───────────────────────────────────────────────────────────────────
 
-  async function updateCard(cardId: string, status: AdvisorCard["status"]) {
+  async function updateCard(card: AdvisorCard, status: AdvisorCard["status"]) {
     if (!workspaceId) return;
-    await api(`/api/workspaces/${workspaceId}/cards/${cardId}`, {
+    const payload = await api(`/api/workspaces/${workspaceId}/cards/${card.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ status })
+      body: JSON.stringify({ status, expectedVersion: card.version })
     });
+    // A concurrent edit won: the server refused the stale write and returned the
+    // current card. Reconcile to the latest rather than reasserting the old state.
+    if (payload.conflict === "version") {
+      showToast("This card was changed elsewhere. Showing the latest.");
+      await loadWorkspace(workspaceId);
+      return;
+    }
     showToast(status === "done" ? "✓ Card marked done" : `Card moved to ${status}`);
     await loadWorkspace(workspaceId);
   }
@@ -620,13 +667,13 @@ export function BoardroomApp() {
         </button>
         <button
           className="border border-stone-200 px-2 py-1 text-xs text-stone-500 transition-colors hover:border-green-400 hover:text-green-700"
-          onClick={() => updateCard(card.id, card.status === "done" ? "active" : "done")}
+          onClick={() => updateCard(card, card.status === "done" ? "active" : "done")}
         >
           {card.status === "done" ? "Reopen" : "Done"}
         </button>
         <button
           className="border border-stone-200 px-2 py-1 text-xs text-stone-400 transition-colors hover:border-red-300 hover:text-red-600"
-          onClick={() => updateCard(card.id, "trash")}
+          onClick={() => updateCard(card, "trash")}
         >
           Trash
         </button>
