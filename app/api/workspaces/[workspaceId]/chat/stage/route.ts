@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey, WorkspaceAccessError, workspaceLocked, workspaceOwnerIsAdmin } from "@/lib/supabase/server";
+import { memoryForChannel } from "@/lib/boardroom/lapse";
 import { buildBoardroomContext } from "@/lib/boardroom/context";
 import { runAdvisorRound, runChanosRound, runTonyClose, normalizeCards } from "@/lib/boardroom/engine";
 import type { SessionState } from "@/lib/boardroom/engine";
@@ -32,7 +33,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   try {
     await ensureWorkspaceMember(session.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const body = await req.json();
@@ -74,12 +76,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     const logger = createBoardroomLogger(session.supabase, { workspaceId, conversationId, userId: session.userId });
 
     // Load fresh context and history
-    const [settings, profile, documents, memory, previousMessages] = await Promise.all([
+    const [settings, profile, documents, memory, previousMessages, ownerIsAdmin] = await Promise.all([
       session.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
       session.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
       session.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
-      session.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
+      session.supabase.from("boardroom_memory_entries").select("kind,content,metadata").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(40),
       session.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
+      workspaceOwnerIsAdmin(session.supabase, workspaceId),
     ]);
 
     const loadError = settings.error || profile.error || documents.error || memory.error || previousMessages.error;
@@ -89,7 +92,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       guardrails: settings.data?.guardrails || "",
       profile: profile.data,
       documents: documents.data || [],
-      memory: memory.data || [],
+      memory: memoryForChannel(memory.data || [], "brainstorming").slice(0, 8),
       recentMessages: previousMessages.data || [],
       activeCard: null,
     });
@@ -101,6 +104,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
       sessionState,
       ceoName: profile.data?.preferred_name || "CEO",
+      audience: (ownerIsAdmin ? "owner" : "member") as "owner" | "member",
       log: logger,
     };
 
@@ -184,7 +188,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
               result.cards.length ? `Cards: ${result.cards.map(c => c.title).join(" | ")}` : "",
               `Decision: ${closeContent.slice(0, 800)}`,
             ].filter(Boolean).join("\n"),
-            metadata: { conversationId, tension: sessionState.tension, source: "stage_route" }
+            metadata: { conversationId, channel: "brainstorming", tension: sessionState.tension, source: "stage_route" }
           });
           logger.stateWrite({ table: "boardroom_memory_entries", stage: "session_summary" });
         }

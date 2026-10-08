@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, WorkspaceAccessError, workspaceLocked } from "@/lib/supabase/server";
 
 function profileText(body: Record<string, unknown>, key: string, max: number) {
   return String(body[key] || "").trim().slice(0, max);
@@ -13,7 +13,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ workspaceId
   try {
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const body = await req.json() as Record<string, unknown>;
@@ -33,6 +34,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ workspaceId
       current_goals: profileText(body, "current_goals", 1600),
       constraints: profileText(body, "constraints", 1600),
       additional_context: profileText(body, "additional_context", 1600),
+      gender_identity: profileText(body, "gender_identity", 60),
+      pronouns: profileText(body, "pronouns", 40),
       onboarding_complete: true,
     }, { onConflict: "workspace_id" })
     .select("*")

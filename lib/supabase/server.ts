@@ -47,12 +47,47 @@ export function createServiceSupabase() {
   return createClient(url, service, { auth: { persistSession: false } });
 }
 
+// The defined lockout response (WBR-373 Stream C). Every workspace route returns
+// this instead of the raw "Workspace access denied." text, and the app renders
+// it as the lockout screen whenever it sees code "boardroom_locked".
+export const BOARDROOM_LOCKED_CODE = "boardroom_locked";
+export const BOARDROOM_LOCKED_MESSAGE = "Your AI Boardroom access is managed in Studio, and this account does not have it right now.";
+
+export function workspaceLocked() {
+  return NextResponse.json({ error: BOARDROOM_LOCKED_MESSAGE, code: BOARDROOM_LOCKED_CODE }, { status: 403 });
+}
+
+export class WorkspaceAccessError extends Error {
+  constructor(message = BOARDROOM_LOCKED_MESSAGE) {
+    super(message);
+    this.name = "WorkspaceAccessError";
+  }
+}
+
+// Server-side owner check: true only when this workspace belongs to one of
+// David's admin accounts (boardroom_workspace_owner_is_admin, security definer).
+// Any error or missing function answers false, so a member always gets the
+// clean personas rather than David's.
+export async function workspaceOwnerIsAdmin(supabase: SupabaseClient, workspaceId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("boardroom_workspace_owner_is_admin", { target_workspace: workspaceId });
+    return !error && data === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureWorkspaceMember(supabase: SupabaseClient, workspaceId: string) {
+  // Entitlement first: a lapsed or revoked Studio grant locks every route, not
+  // only the workspace list.
+  const access = await supabase.rpc("boardroom_has_access");
+  if (access.error) throw access.error;
+  if (access.data !== true) throw new WorkspaceAccessError();
   const { data, error } = await supabase
     .from("boardroom_workspace_members")
     .select("workspace_id")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw error;
-  if (!data) throw new Error("Workspace not found or not accessible.");
+  if (!data) throw new WorkspaceAccessError();
 }

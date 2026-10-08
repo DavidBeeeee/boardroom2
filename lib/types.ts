@@ -22,6 +22,8 @@ export type BoardroomProfile = {
   current_goals: string;
   constraints: string;
   additional_context: string;
+  gender_identity?: string;
+  pronouns?: string;
   onboarding_complete: boolean;
   created_at: string;
   updated_at: string;
@@ -90,6 +92,8 @@ export type ModeContext = {
   lane: Lane;
   laneAdvisor: AdvisorName;
   cardLimit: number;
+  // Short-answer toggle (WBR-373 Stream D): every advisor keeps turns concise.
+  concise?: boolean;
 };
 
 export type BoardroomTurn = {

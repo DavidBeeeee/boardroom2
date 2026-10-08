@@ -1,5 +1,5 @@
 import type { AdvisorName, BoardroomTurn, GeneratedCard, Message, ModeContext } from "@/lib/types";
-import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket, BOARDROOM_GUARDRAILS } from "./advisors";
+import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket, BOARDROOM_GUARDRAILS, type PersonaAudience } from "./advisors";
 import { callDeepSeek, type ChatMessage } from "./deepseek";
 import type { BoardroomLogger, LogMeta } from "./logging";
 
@@ -58,9 +58,17 @@ function personalizeForCeo(content: string, ceoName = "CEO") {
     .replace(/__BOARDROOM_DAVID_ALLEN__/g, "David Allen");
 }
 
+// The DeepSeek transport. Tests swap it to capture the exact assembled prompts
+// (after personalizeForCeo) without a network call.
+type LlmTransport = typeof callDeepSeek;
+let transport: LlmTransport = callDeepSeek;
+export function setLlmTransportForTests(next: LlmTransport | null) {
+  transport = next ?? callDeepSeek;
+}
+
 async function llm(messages: ChatMessage[], clientApiKey?: string, ceoName?: string, meta?: LogMeta): Promise<string> {
   const logger = meta?.logger;
-  return callDeepSeek(messages.map(message => ({
+  return transport(messages.map(message => ({
     ...message,
     content: personalizeForCeo(message.content, ceoName),
   })), clientApiKey, logger ? {
@@ -177,6 +185,7 @@ export async function runTonyIntake(input: {
   tonyOnly?: boolean;
   activeAdvisor?: AdvisorName;
   ceoName?: string;
+  audience?: PersonaAudience;
   log?: BoardroomLogger;
 }): Promise<{ turns: BoardroomTurn[]; sessionState: SessionState | null; nextStage: StageResult["nextStage"] | "done" | "clarify" | "one_to_one" }> {
 
@@ -194,7 +203,7 @@ export async function runTonyIntake(input: {
     const raw = await llm([
       {
         role: "system",
-        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket("Tony", "tony_only", input.mode)}\n${formatAdvisorVoiceContract("Tony", "tony_only")}\n${input.context}\n\nHandle this directly. Short, direct, no essay.`
+        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket("Tony", "tony_only", input.mode, input.audience)}\n${formatAdvisorVoiceContract("Tony", "tony_only", input.audience)}\n${input.context}\n\nHandle this directly. Short, direct, no essay.`
       },
       ...baseHistory,
       { role: "user", content: input.userPrompt }
@@ -236,8 +245,8 @@ export async function runTonyIntake(input: {
         role: "system",
         content: `${BOARDROOM_GUARDRAILS}
 
-${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
-${formatAdvisorVoiceContract("Tony", "intake")}
+${formatAdvisorVoicePacket("Tony", "intake", input.mode, input.audience)}
+${formatAdvisorVoiceContract("Tony", "intake", input.audience)}
 
 ${input.context}
 ${clarifyQuote}
@@ -327,8 +336,8 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
       role: "system",
       content: `${BOARDROOM_GUARDRAILS}
 
-${formatAdvisorVoicePacket("Tony", "intake", input.mode)}
-${formatAdvisorVoiceContract("Tony", "intake")}
+${formatAdvisorVoicePacket("Tony", "intake", input.mode, input.audience)}
+${formatAdvisorVoiceContract("Tony", "intake", input.audience)}
 
 ${input.context}
 ${commitmentInstruction}
@@ -457,6 +466,7 @@ export async function runAdvisorRound(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  audience?: PersonaAudience;
   log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
@@ -495,8 +505,8 @@ export async function runAdvisorRound(input: {
           role: "system",
           content: `${BOARDROOM_GUARDRAILS}
 
-${formatAdvisorVoicePacket(advisor, `round_${round}`, mode)}
-${formatAdvisorVoiceContract(advisor, `round_${round}`)}
+${formatAdvisorVoicePacket(advisor, `round_${round}`, mode, input.audience)}
+${formatAdvisorVoiceContract(advisor, `round_${round}`, input.audience)}
 
 ${input.context}
 
@@ -530,7 +540,7 @@ Plain text only — no JSON, no code blocks.
         { role: "user", content: `You are ${advisor}. Respond now in ${advisor}'s voice only. Do not reproduce the conversation history. Write your response:` }
       ], input.clientApiKey, input.ceoName, { logger: input.log, stage: `advisor_round_${round}`, speaker: advisor });
 
-      return { advisor, message: message || fallbackAdvisorTurn(advisor, input.ceoName) };
+      return { advisor, message: message || fallbackAdvisorTurn(advisor, input.ceoName, input.audience) };
     })
   );
 
@@ -564,6 +574,7 @@ export async function runChanosRound(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  audience?: PersonaAudience;
   log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
@@ -589,8 +600,8 @@ export async function runChanosRound(input: {
     role: "system",
     content: `${BOARDROOM_GUARDRAILS}
 
-${formatAdvisorVoicePacket("Chanos", `chanos_round_${round}`, mode)}
-${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`)}
+${formatAdvisorVoicePacket("Chanos", `chanos_round_${round}`, mode, input.audience)}
+${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`, input.audience)}
 
 ${input.context}
 
@@ -648,6 +659,7 @@ export async function runTonyClose(input: {
   clientApiKey?: string;
   sessionState: SessionState;
   ceoName?: string;
+  audience?: PersonaAudience;
   log?: BoardroomLogger;
 }): Promise<StageResult> {
   const { sessionState, mode } = input;
@@ -658,8 +670,8 @@ export async function runTonyClose(input: {
     role: "system",
     content: `${BOARDROOM_GUARDRAILS}
 
-${formatAdvisorVoicePacket("Tony", "close", mode)}
-${formatAdvisorVoiceContract("Tony", "close")}
+${formatAdvisorVoicePacket("Tony", "close", mode, input.audience)}
+${formatAdvisorVoiceContract("Tony", "close", input.audience)}
 
 ${input.context}
 
@@ -757,12 +769,12 @@ THE CHECKPOINT: how David will know this worked]
 
 async function runAdvisorOneToOne(
   advisor: AdvisorName,
-  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; ceoName?: string; log?: BoardroomLogger; }
+  input: { userPrompt: string; context: string; history: Pick<Message, "role" | "speaker" | "content" | "stage">[]; mode: ModeContext; clientApiKey?: string; ceoName?: string; audience?: PersonaAudience; log?: BoardroomLogger; }
 ) {
   const raw = await llm([
     {
       role: "system",
-      content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(advisor, "one_to_one", input.mode)}\n${formatAdvisorVoiceContract(advisor, "one_to_one")}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
+      content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(advisor, "one_to_one", input.mode, input.audience)}\n${formatAdvisorVoiceContract(advisor, "one_to_one", input.audience)}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
     },
     ...historyMessages(input.history),
     { role: "user", content: input.userPrompt }
@@ -786,13 +798,14 @@ export async function runBoardroomEngine(input: {
   activeAdvisor?: AdvisorName;
   tonyOnly?: boolean;
   ceoName?: string;
+  audience?: PersonaAudience;
   log?: BoardroomLogger;
 }) {
   if (input.activeAdvisor) {
     const raw = await llm([
       {
         role: "system",
-        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(input.activeAdvisor, "one_to_one", input.mode)}\n${formatAdvisorVoiceContract(input.activeAdvisor, "one_to_one")}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
+        content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(input.activeAdvisor, "one_to_one", input.mode, input.audience)}\n${formatAdvisorVoiceContract(input.activeAdvisor, "one_to_one", input.audience)}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
       },
       ...historyMessages(input.history),
       { role: "user", content: input.userPrompt }
@@ -815,14 +828,14 @@ function formatClose(close: { decision: string; decisionBrief: Record<string, st
   ].join("\n");
 }
 
-function fallbackAdvisorTurn(advisor: AdvisorName, ceoName = "CEO"): string {
+function fallbackAdvisorTurn(advisor: AdvisorName, ceoName = "CEO", audience: PersonaAudience = "member"): string {
   const fallbacks: Record<AdvisorName, string> = {
     Tony: `${ceoName || "CEO"}, turn this signal into one concrete decision, one next action, one artifact.`,
     Russell: "The commercial path needs to be concrete: one audience, one hook, one offer, one conversion event. If we can't name all four, it's still theater. 🎣",
     Allen: "What does done look like? Strip it until the first move takes 20 minutes or less. ✅",
     Chanos: "The plan fails if distribution, proof, cash conversion, or delivery capacity is assumed instead of verified. Kill the fantasy math. 🩸",
     Andrej: "Build only where tooling changes throughput. If the bottleneck is trust or offer clarity, no app fixes that. 🤖",
-    Calvina: "Listen to the language underneath the strategy. If the sentence installs panic, the action will wobble. Shift the internal frame first. 💋",
+    Calvina: `Listen to the language underneath the strategy. If the sentence installs panic, the action will wobble. Shift the internal frame first. ${audience === "owner" ? "💋" : "🌊"}`,
   };
   return fallbacks[advisor];
 }

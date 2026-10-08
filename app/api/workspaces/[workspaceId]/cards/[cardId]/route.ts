@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, WorkspaceAccessError, workspaceLocked } from "@/lib/supabase/server";
 import { parseExpectedVersion, updateCardWithVersion } from "@/lib/boardroom/concurrency";
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ workspaceId: string; cardId: string }> }) {
@@ -10,7 +10,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ workspace
   try {
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const body = await req.json();

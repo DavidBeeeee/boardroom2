@@ -16,7 +16,8 @@ export function modeContext(input?: Partial<ModeContext>): ModeContext {
     depth,
     lane,
     laneAdvisor,
-    cardLimit: depth === "quick" ? 1 : depth === "normal" ? 2 : 3
+    cardLimit: depth === "quick" ? 1 : depth === "normal" ? 2 : 3,
+    concise: input?.concise === true,
   };
 }
 

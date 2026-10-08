@@ -17,6 +17,7 @@ import {
   RefreshCcw,
   Send,
   Settings,
+  Square,
   Sun,
   Moon,
   Upload,
@@ -27,6 +28,7 @@ import {
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import { boardroomPath } from "@/lib/boardroom/path";
 import { isDecisionReachedMessage } from "@/lib/boardroom/decision";
+import { lapseState, returnLine, type LastConversation } from "@/lib/boardroom/lapse";
 import { BoardroomProfileForm, type BoardroomProfileDraft } from "@/components/boardroom-profile-form";
 import { BoardroomHelp } from "@/components/boardroom-help";
 import type { AdvisorCard, BoardroomProfile, Conversation, DocumentRecord, Message, ModeContext, Workspace } from "@/lib/types";
@@ -70,7 +72,22 @@ function stageTag(stage: string, speaker: string): string | null {
   if (stage.startsWith("chanos_round")) return `challenge · round ${stage.split("_").pop()}`;
   if (stage.startsWith("advisor_round")) return `round ${stage.split("_").pop()}`;
   if (stage === "advisor_one_to_one") return "1:1";
+  if (stage === "safety_pause") return "safety pause";
   return null;
+}
+
+// What happens to a member's workspace when access ends. States only what the
+// code does: nothing deletes a workspace when a Studio grant lapses.
+const DATA_NOTE = "If your Boardroom access ends, your workspace stays exactly as you left it: profile, documents, conversations and work cards are kept, unchanged, until you or David delete them. When access comes back, you pick up where you left off.";
+
+const LOCKED_CODE = "boardroom_locked";
+const HELP_EMAIL = "email@davidbee.me";
+
+class LockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LockedError";
+  }
 }
 
 const MORNING_BRIEF_PROMPT = `Morning Brief. Pull my open advisor work cards, recent decisions, and any unresolved tension from previous sessions. Give me the three most important things to focus on today. Close with one physical action I can take in the next 20 minutes that will move the needle most.`;
@@ -87,6 +104,7 @@ type WorkspaceBundle = {
   cards: AdvisorCard[];
   settings: { guardrails?: string } | null;
   profile: BoardroomProfile | null;
+  lastConversation?: LastConversation | null;
 };
 
 type Toast = { id: number; message: string };
@@ -114,7 +132,11 @@ export function BoardroomApp() {
   // Chat UI
   const [channel, setChannel] = useState<(typeof CHANNELS)[number]>("brainstorming");
   const [composer, setComposer] = useState("");
-  const [mode, setMode] = useState<Pick<ModeContext, "depth" | "lane">>({ depth: "normal", lane: "business" });
+  const [mode, setMode] = useState<Pick<ModeContext, "depth" | "lane" | "concise">>({ depth: "normal", lane: "business", concise: false });
+  const [returnDismissed, setReturnDismissed] = useState(false);
+  // Emergency stop (WBR-373 Stream D): aborts the request in flight and stops
+  // every remaining debate stage for this message.
+  const abortRef = useRef<AbortController | null>(null);
   const [clientKey, setClientKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [tonyOnly, setTonyOnly] = useState(false);
@@ -204,6 +226,10 @@ export function BoardroomApp() {
     // 409 carries structured state the caller reconciles (a duplicate request
     // already in flight, or a stale card version), so it is returned, not thrown.
     if (res.status === 409) return payload;
+    if (res.status === 403 && payload.code === LOCKED_CODE) {
+      setAccessError(payload.error || "AI Boardroom is locked.");
+      throw new LockedError(payload.error || "AI Boardroom is locked.");
+    }
     if (!res.ok) throw new Error(payload.error || `Request failed: ${res.status}`);
     return payload;
   }
@@ -226,7 +252,7 @@ export function BoardroomApp() {
     const payload = await res.json();
     if (!res.ok) {
       const message = payload.error || "Could not load your Boardroom.";
-      setAccessError(message);
+      setAccessError(payload.code === LOCKED_CODE || res.status === 403 ? message : `Could not load your Boardroom: ${message}`);
       return;
     }
     setAccessError("");
@@ -238,14 +264,21 @@ export function BoardroomApp() {
     try {
       const payload = await api(`/api/workspaces/${id}`);
       setBundle(payload);
-      const firstConvId = payload.conversations?.[0]?.id || "";
-      setConversationId(firstConvId);
-      if (firstConvId) {
-        setChannelConvIds(prev => ({ ...prev, brainstorming: firstConvId }));
-        await loadConversation(id, firstConvId);
+      // Each room keeps its own most recent conversation, so opening the app
+      // lands in the Boardroom and never in whichever 1:1 was touched last.
+      const perChannel: Record<string, string> = {};
+      for (const conversation of (payload.conversations || []) as Conversation[]) {
+        const key = conversation.channel || "brainstorming";
+        if (!perChannel[key]) perChannel[key] = conversation.id;
       }
+      setChannelConvIds(perChannel);
+      setChannel("brainstorming");
+      const firstConvId = perChannel.brainstorming || "";
+      setConversationId(firstConvId);
+      if (firstConvId) await loadConversation(id, firstConvId);
       else setMessages([]);
     } catch (error) {
+      if (error instanceof LockedError) return;
       showToast(error instanceof Error ? error.message : "Could not load workspace.");
     }
   }
@@ -316,12 +349,14 @@ export function BoardroomApp() {
     let currentState = sessionState;
 
     while (currentStage && currentStage !== "done") {
+      if (abortRef.current?.signal.aborted) break;
       // Show who's coming before the API call even starts
       flushSync(() => setTypingAdvisor(stageTypingLabel(currentStage, currentState)));
 
       try {
         const stagePayload = await api(`/api/workspaces/${workspaceId}/chat/stage`, {
           method: "POST",
+          signal: abortRef.current?.signal,
           headers: { "Idempotency-Key": newIdempotencyKey() },
           body: JSON.stringify({
             conversationId: convId,
@@ -347,6 +382,7 @@ export function BoardroomApp() {
 
       } catch (error) {
         flushSync(() => setTypingAdvisor(null));
+        if (abortRef.current?.signal.aborted || error instanceof LockedError) break;
         const msg = error instanceof Error ? error.message : "Stage error.";
         showToast(`❌ ${msg}`);
         flushSync(() => setMessages(current => [...current, {
@@ -376,11 +412,14 @@ export function BoardroomApp() {
     }
   }
 
-  async function sendMessage(overrideText?: string, overrideTonyOnly?: boolean) {
+  async function sendMessage(overrideText?: string, overrideTonyOnly?: boolean, overrideChannel?: (typeof CHANNELS)[number]) {
     const text = (overrideText ?? composer).trim();
     if (!text || !workspaceId) return;
 
-    const sendChannel = channel; // capture channel at send time
+    const sendChannel = overrideChannel ?? channel; // capture channel at send time
+    const sendConversationId = channelConvIds[sendChannel] ?? (sendChannel === channel ? conversationId : "");
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     // Immediately show user message + Tony typing before the API call
     const pendingId = `pending-${Date.now()}`;
@@ -406,10 +445,11 @@ export function BoardroomApp() {
     try {
       const payload = await api(`/api/workspaces/${workspaceId}/chat`, {
         method: "POST",
+        signal: controller.signal,
         headers: { "Idempotency-Key": newIdempotencyKey() },
         body: JSON.stringify({
           text,
-          conversationId,
+          conversationId: sendConversationId,
           channel: sendChannel,
           mode,
           clientApiKey: clientKey || undefined,
@@ -460,6 +500,7 @@ export function BoardroomApp() {
 
     } catch (error) {
       flushSync(() => setTypingAdvisor(null));
+      if (controller.signal.aborted || error instanceof LockedError) return;
       const msg = error instanceof Error ? error.message : "Boardroom error.";
       showToast(`❌ ${msg}`);
       // Show error inline in chat too so it's unmissable
@@ -475,20 +516,54 @@ export function BoardroomApp() {
         created_at: new Date().toISOString(),
       }]));
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setBusy(false);
     }
   }
 
+  function stopGenerating() {
+    const controller = abortRef.current;
+    if (!controller) return;
+    controller.abort();
+    flushSync(() => {
+      setTypingAdvisor(null);
+      setBusy(false);
+      setMessages(current => [...current, {
+        id: `stopped-${Date.now()}`,
+        workspace_id: workspaceId,
+        conversation_id: conversationId,
+        role: "system" as const,
+        speaker: "System",
+        content: "Stopped. No more advisor turns will run for this message. A turn that was already being written may still be saved and show up when you reload.",
+        stage: "stopped",
+        metadata: {},
+        created_at: new Date().toISOString(),
+      }]);
+    });
+    showToast("Stopped the Boardroom.");
+  }
+
+  // Briefs belong to the main room; opening it first keeps a 1:1 room's
+  // history off screen and out of the brief.
+  async function openMainRoom() {
+    if (channel === "brainstorming") return;
+    const savedId = channelConvIds.brainstorming || "";
+    setChannel("brainstorming");
+    setConversationId(savedId);
+    setMessages([]);
+    if (workspaceId && savedId) await loadConversation(workspaceId, savedId);
+  }
+
   async function runMorningBrief() {
     setTab("chat");
-    setChannel("brainstorming");
-    await sendMessage(MORNING_BRIEF_PROMPT, true);
+    await openMainRoom();
+    await sendMessage(MORNING_BRIEF_PROMPT, true, "brainstorming");
   }
 
   async function runEveningRecap() {
     setTab("chat");
-    setChannel("brainstorming");
-    await sendMessage(EVENING_RECAP_PROMPT, true);
+    await openMainRoom();
+    await sendMessage(EVENING_RECAP_PROMPT, true, "brainstorming");
   }
 
   // ── Documents ───────────────────────────────────────────────────────────────
@@ -608,10 +683,14 @@ export function BoardroomApp() {
       <main className="flex min-h-screen items-center justify-center bg-paper px-4 dark:bg-[#111716] dark:text-white">
         <section className="w-full max-w-md border border-stone-300 bg-white p-7 shadow-sm dark:border-white/15 dark:bg-[#192321]">
           <div className="mb-4 flex h-11 w-11 items-center justify-center bg-coral text-white"><Users size={22} /></div>
-          <h1 className="font-serif text-2xl font-bold">AI Boardroom is locked</h1>
-          <p className="my-4 text-sm leading-6 text-stone-600 dark:text-white/65">This Studio account does not currently include AI Boardroom access. Message David Bee for early access.</p>
+          <h1 className="font-serif text-2xl font-bold">Your Boardroom is paused</h1>
+          <p className="my-4 text-sm leading-6 text-stone-600 dark:text-white/65">AI Boardroom access is managed in Studio, and this account doesn't have it right now. That usually means a membership ended or hasn't been switched on yet. Nothing here is broken, and nothing has been deleted.</p>
+          <p className="mb-5 border-l-4 border-teal bg-teal/5 px-3 py-2 text-xs leading-5 text-stone-600 dark:text-white/65" data-boardroom-data-note>{DATA_NOTE}</p>
           <a className="flex w-full items-center justify-center gap-2 bg-ink px-4 py-3 font-bold text-white dark:bg-[#45c5c5] dark:text-[#071f1f]" href="/">
-            <Home size={16} /> Back to Studio
+            <Home size={16} /> Check my access in Studio
+          </a>
+          <a className="mt-3 flex w-full items-center justify-center gap-2 border border-stone-300 px-4 py-3 text-sm font-bold text-stone-700 hover:border-teal hover:text-teal dark:border-white/15 dark:text-white/80" href={`mailto:${HELP_EMAIL}?subject=${encodeURIComponent("AI Boardroom access")}`}>
+            <HelpCircle size={16} /> Ask for help
           </a>
         </section>
       </main>
@@ -639,6 +718,7 @@ export function BoardroomApp() {
     bundle.decisionReachedConversationIds.includes(conversation.id)
   ) ?? [];
   const currentDecisionReached = messages.some(isDecisionReachedMessage);
+  const lapseLine = returnLine(lapseState(bundle?.lastConversation ?? null), bundle?.profile?.preferred_name);
 
   const workCards = activeCards.length ? activeCards.map((card) => (
     <div key={card.id} className={`mb-3 border p-3 ${card.status === "active" ? "border-teal/40 bg-teal/5" : "border-stone-200"}`}>
@@ -657,10 +737,14 @@ export function BoardroomApp() {
         <button
           className="border border-teal px-2 py-1 text-xs font-bold text-teal transition-colors hover:bg-teal hover:text-white"
           onClick={() => {
+            const savedId = channelConvIds[card.advisor] || "";
             setChannel(card.advisor as typeof CHANNELS[number]);
             setActiveCardId(card.id);
             setTab("chat");
             setMobileNavOpen(false);
+            setConversationId(savedId);
+            setMessages([]);
+            if (workspaceId && savedId) void loadConversation(workspaceId, savedId);
           }}
         >
           Work with {card.advisor}
@@ -879,6 +963,13 @@ export function BoardroomApp() {
                   </div>
                 ) : null}
 
+                {lapseLine && !returnDismissed && channel === "brainstorming" ? (
+                  <div className="mx-auto mb-4 flex max-w-3xl items-start gap-3 border border-teal/40 bg-teal/5 px-4 py-3 text-sm leading-6 text-stone-700 dark:text-white/80" role="status" data-boardroom-return-line>
+                    <span className="flex-1">{lapseLine}</span>
+                    <button aria-label="Dismiss welcome back note" onClick={() => setReturnDismissed(true)} className="mt-1 opacity-60 hover:opacity-100"><X size={14} /></button>
+                  </div>
+                ) : null}
+
                 {messages.map((message) => (
                   <article key={message.id} className={`group mb-3 ${message.role === "user" ? "flex justify-end" : ""}`}>
                     {message.role === "user" ? (
@@ -994,6 +1085,10 @@ export function BoardroomApp() {
                       {l}
                     </button>
                   ))}
+                  <div className="mx-2 h-4 w-px bg-stone-200" />
+                  <button aria-label="Short answers" aria-pressed={Boolean(mode.concise)} title="Every advisor keeps replies short" onClick={() => setMode(m => ({ ...m, concise: !m.concise }))} className={`rounded px-2 py-0.5 text-xs transition-colors ${mode.concise ? "bg-ink text-white" : "text-stone-500 hover:bg-stone-200"}`}>
+                    Short answers
+                  </button>
                   <div className="ml-auto text-xs text-stone-400 italic hidden sm:block">
                     Tag: @Russell @Chanos @Calvina…
                   </div>
@@ -1018,6 +1113,15 @@ export function BoardroomApp() {
                       onChange={(e) => saveClientKey(e.target.value)}
                       placeholder="DeepSeek API key (optional — uses server key if blank)"
                     />
+                    {busy ? (
+                      <button
+                        className="flex items-center gap-2 border-2 border-red-600 bg-white px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50"
+                        onClick={stopGenerating}
+                        aria-label="Stop the Boardroom now"
+                      >
+                        <Square size={13} fill="currentColor" /> Stop
+                      </button>
+                    ) : null}
                     <button
                       className="flex items-center gap-2 bg-coral px-4 py-2 text-sm font-bold text-white disabled:opacity-40 transition-opacity"
                       disabled={busy || !composer.trim()}
@@ -1108,6 +1212,7 @@ export function BoardroomApp() {
             <div className="border border-stone-300 bg-white p-4">
               <h3 className="mb-1 flex items-center gap-2 font-serif text-lg font-bold"><Briefcase size={16} /> Workspace</h3>
               <p className="text-xs text-stone-500 mb-3">{bundle?.workspace.name} · {bundle?.workspace.slug}</p>
+              <p className="mb-3 text-xs leading-5 text-stone-500" data-boardroom-data-note>{DATA_NOTE}</p>
               <div className="flex flex-wrap gap-3">
                 <button className="flex items-center gap-2 border border-stone-300 px-4 py-2 text-sm font-bold transition-colors hover:border-teal hover:text-teal" onClick={() => setTab("profile")}>
                   <UserRound size={14} /> Edit profile

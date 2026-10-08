@@ -14,7 +14,7 @@ export type BoardroomProfileDraft = Pick<BoardroomProfile,
   | "current_goals"
   | "constraints"
   | "additional_context"
->;
+> & { gender_identity: string; pronouns: string };
 
 const EMPTY_PROFILE: BoardroomProfileDraft = {
   preferred_name: "",
@@ -26,7 +26,11 @@ const EMPTY_PROFILE: BoardroomProfileDraft = {
   current_goals: "",
   constraints: "",
   additional_context: "",
+  gender_identity: "",
+  pronouns: "",
 };
+
+const PRONOUN_OPTIONS = ["she/her", "he/him", "they/them"];
 
 type ProfileFormProps = {
   profile?: BoardroomProfile | null;
@@ -51,6 +55,8 @@ export function BoardroomProfileForm({ profile, onboarding = false, onSave, onCa
       current_goals: profile?.current_goals || "",
       constraints: profile?.constraints || "",
       additional_context: profile?.additional_context || "",
+      gender_identity: profile?.gender_identity || "",
+      pronouns: profile?.pronouns || "",
     });
   }, [profile]);
 
@@ -91,6 +97,18 @@ export function BoardroomProfileForm({ profile, onboarding = false, onSave, onCa
         <label className={labelClass}>
           What should the team call you? <span className="text-coral">*</span>
           <input className={inputClass} value={draft.preferred_name} maxLength={80} onChange={event => update("preferred_name", event.target.value)} placeholder="Your preferred name" autoFocus={onboarding} />
+        </label>
+        <label className={labelClass}>
+          Your pronouns
+          <input className={inputClass} list="boardroom-pronoun-options" value={draft.pronouns} maxLength={40} onChange={event => update("pronouns", event.target.value)} placeholder="she/her, he/him, they/them, or your own" />
+          <datalist id="boardroom-pronoun-options">
+            {PRONOUN_OPTIONS.map(option => <option key={option} value={option} />)}
+          </datalist>
+          <span className="mt-1 block text-xs font-normal text-stone-500 dark:text-white/50">The advisors use these when they talk about you.</span>
+        </label>
+        <label className={labelClass}>
+          Your gender <span className="font-normal text-stone-500 dark:text-white/50">(optional)</span>
+          <input className={inputClass} value={draft.gender_identity} maxLength={60} onChange={event => update("gender_identity", event.target.value)} placeholder="However you describe it, or leave blank" />
         </label>
         <label className={labelClass}>
           Your role

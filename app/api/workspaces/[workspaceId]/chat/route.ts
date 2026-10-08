@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey, WorkspaceAccessError, workspaceLocked, workspaceOwnerIsAdmin } from "@/lib/supabase/server";
+import { crisisResponse, detectCrisis } from "@/lib/boardroom/safety";
+import { conversationMatchesChannel, memoryForChannel } from "@/lib/boardroom/lapse";
 import { buildBoardroomContext } from "@/lib/boardroom/context";
 import { runTonyIntake } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
@@ -19,7 +21,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   try {
     await ensureWorkspaceMember(session.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const body = await req.json();
@@ -63,8 +66,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   // The full chat-turn mutation, run exactly once per idempotency key.
   async function runChatTurn() {
-  // Create or reuse conversation
+  // Create or reuse conversation. A supplied id is reused only when it belongs
+  // to this channel, so a 1:1 turn can never land in the main room or in
+  // another advisor's room (WBR-373 Stream D, room isolation).
   let conversationId = String(body.conversationId || "");
+  if (conversationId) {
+    const { data: existing, error: existingError } = await session.supabase
+      .from("boardroom_conversations").select("id,channel").eq("workspace_id", workspaceId).eq("id", conversationId).maybeSingle();
+    if (existingError) throw new ChatTurnError(existingError.message, 500);
+    if (!conversationMatchesChannel(existing, channel)) conversationId = "";
+  }
+  const createdConversation = !conversationId;
   if (!conversationId) {
     const { data, error } = await session.supabase
       .from("boardroom_conversations")
@@ -83,20 +95,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
 
   // Observability: every turn, DeepSeek call and state write from here on is logged.
   const logger = createBoardroomLogger(session.supabase, { workspaceId, conversationId, userId: session.userId });
-  if (!String(body.conversationId || "")) {
+  if (createdConversation) {
     logger.stateWrite({ table: "boardroom_conversations", stage: "conversation_create", detail: { channel } });
   }
 
   // Load workspace context
-  const [settings, profile, documents, memory, previousMessages, activeCard] = await Promise.all([
+  const [settings, profile, documents, memory, previousMessages, activeCard, ownerIsAdmin] = await Promise.all([
     session.supabase.from("boardroom_workspace_settings").select("*").eq("workspace_id", workspaceId).maybeSingle(),
     session.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
     session.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
-    session.supabase.from("boardroom_memory_entries").select("kind,content").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(8),
+    session.supabase.from("boardroom_memory_entries").select("kind,content,metadata").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(40),
     session.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(24),
     body.cardId
       ? session.supabase.from("boardroom_advisor_cards").select("title,advisor,context,desired_output").eq("workspace_id", workspaceId).eq("id", String(body.cardId)).maybeSingle()
-      : Promise.resolve({ data: null, error: null })
+      : Promise.resolve({ data: null, error: null }),
+    workspaceOwnerIsAdmin(session.supabase, workspaceId),
   ]);
 
   const loadError = settings.error || profile.error || documents.error || memory.error || previousMessages.error || activeCard.error;
@@ -111,11 +124,33 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   if (userMessageError) throw new ChatTurnError(userMessageError.message, 500);
   logger.stateWrite({ table: "boardroom_messages", stage: "user_prompt", detail: { role: "user" } });
 
+  // Safety boundary (WBR-373 Stream B): crisis or self-harm language skips every
+  // advisor round and gets one plain, human answer that points to real help.
+  const crisis = detectCrisis(text);
+  if (crisis.tripped) {
+    logger.safety({ category: crisis.category, patternId: crisis.patternId });
+    const { data: safetyMessages, error: safetyError } = await session.supabase
+      .from("boardroom_messages")
+      .insert({
+        workspace_id: workspaceId, conversation_id: conversationId, role: "assistant",
+        speaker: "AI Boardroom", content: crisisResponse(profile.data?.preferred_name), stage: "safety_pause",
+        metadata: { safety: { category: crisis.category } },
+      })
+      .select("*");
+    if (safetyError) {
+      await logger.flush();
+      throw new ChatTurnError(safetyError.message, 500);
+    }
+    logger.stateWrite({ table: "boardroom_messages", stage: "safety_pause", detail: { role: "assistant" } });
+    await logger.flush();
+    return { conversationId, userMessage, messages: safetyMessages || [], cards: [], nextStage: "done", sessionState: null, safety: true };
+  }
+
   const contextText = buildBoardroomContext({
     guardrails: settings.data?.guardrails || "",
     profile: profile.data,
     documents: documents.data || [],
-    memory: memory.data || [],
+    memory: memoryForChannel(memory.data || [], channel).slice(0, 8),
     recentMessages: previousMessages.data || [],
     activeCard: activeCard.data
   });
@@ -131,6 +166,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       activeAdvisor,
       tonyOnly: body.tonyOnly === true,
       ceoName: profile.data?.preferred_name || "CEO",
+      audience: ownerIsAdmin ? "owner" : "member",
       log: logger,
     });
 
@@ -166,7 +202,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
           workspace_id: workspaceId,
           kind: "session_summary",
           content: `Prompt: ${text.slice(0, 300)}\nResponse: ${lastMsg.content.slice(0, 800)}`,
-          metadata: { conversationId, source: "chat_route" }
+          metadata: { conversationId, channel, source: "chat_route" }
         }).throwOnError();
         logger.stateWrite({ table: "boardroom_memory_entries", stage: "session_summary" });
       }

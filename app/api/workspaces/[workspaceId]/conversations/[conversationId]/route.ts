@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, WorkspaceAccessError, workspaceLocked } from "@/lib/supabase/server";
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId: string; conversationId: string }> }) {
   const { workspaceId, conversationId } = await ctx.params;
@@ -9,7 +9,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
   try {
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const [conversation, messages] = await Promise.all([

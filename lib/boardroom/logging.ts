@@ -19,7 +19,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // Writes go through the caller's RLS-scoped client, so a workspace's logs are
 // walled off exactly like its messages.
 
-export type LogEventType = "turn" | "deepseek_call" | "state_write";
+export type LogEventType = "turn" | "deepseek_call" | "state_write" | "safety";
 
 export type LogStatus =
   | "success"
@@ -67,6 +67,9 @@ export type BoardroomLogger = {
     stage?: string;
     detail?: Record<string, unknown>;
   }): void;
+  // A member message tripped the crisis check (WBR-373 Stream B). Records the
+  // category and pattern id only, never the member's words.
+  safety(input: { category: string; patternId: string; stage?: string }): void;
   flush(): Promise<void>;
 };
 
@@ -148,6 +151,16 @@ export function createBoardroomLogger(
         status: input.status ?? "ok",
         stage: input.stage ?? "",
         detail: { table: input.table, ...(input.detail ?? {}) },
+      });
+    },
+    safety(input) {
+      enqueue({
+        ...base(),
+        event_type: "safety",
+        status: "ok",
+        stage: input.stage ?? "safety_pause",
+        speaker: "AI Boardroom",
+        detail: { category: input.category, patternId: input.patternId, advisorRoundsSkipped: true },
       });
     },
     async flush() {

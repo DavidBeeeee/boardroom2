@@ -20,6 +20,8 @@ export function buildBoardroomContext(input: ContextInput) {
     const profile = input.profile;
     const profileLines = [
       `Preferred name: ${profile.preferred_name}`,
+      profile.pronouns && `Pronouns: ${profile.pronouns}`,
+      profile.gender_identity && `Gender: ${profile.gender_identity}`,
       profile.role_title && `Role: ${profile.role_title}`,
       profile.business_name && `Business: ${profile.business_name}`,
       profile.business_description && `Business context: ${profile.business_description}`,
@@ -32,7 +34,8 @@ export function buildBoardroomContext(input: ContextInput) {
 
     parts.push(
       `CURRENT CEO PROFILE (verified and specific to this workspace):\n${profileLines.join("\n")}\n\n` +
-      `Address the CEO as ${profile.preferred_name || "CEO"}. Apply every advisor instruction and example to this CEO, their business, and their circumstances. Never assume this CEO is David or reuse another workspace's identity.`
+      `Address the CEO as ${profile.preferred_name || "CEO"}. Apply every advisor instruction and example to this CEO, their business, and their circumstances. Never assume this CEO is David or reuse another workspace's identity.` +
+      (profile.pronouns ? ` Refer to the CEO with the pronouns ${profile.pronouns} whenever you speak about them in the third person, and adjust any example in your instructions that assumes "he" or "him".` : "")
     );
   }
 

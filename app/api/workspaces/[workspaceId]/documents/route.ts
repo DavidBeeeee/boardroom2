@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey } from "@/lib/supabase/server";
+import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey, WorkspaceAccessError, workspaceLocked } from "@/lib/supabase/server";
 import { createSupabaseIdempotencyStore, withIdempotency } from "@/lib/boardroom/idempotency";
 import { extractDocumentText, supportedDocument } from "@/lib/documents/extract";
 
@@ -12,7 +12,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ workspaceId
   try {
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const { data, error } = await authed.supabase
@@ -33,7 +34,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   try {
     await ensureWorkspaceMember(authed.supabase, workspaceId);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Workspace access denied.", 403);
+    if (error instanceof WorkspaceAccessError) return workspaceLocked();
+    return jsonError(error instanceof Error ? error.message : "Could not check Boardroom access.", 500);
   }
 
   const form = await req.formData();
