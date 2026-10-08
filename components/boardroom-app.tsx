@@ -649,7 +649,7 @@ export function BoardroomApp() {
 
   function copyAllMessages() {
     const text = messages
-      .map(m => `[${m.speaker}${m.stage ? ` — ${m.stage.replace(/_/g, " ")}` : ""}]\n${m.content}`)
+      .map(m => `[${m.speaker}${m.stage ? ` (${m.stage.replace(/_/g, " ")})` : ""}]\n${m.content}`)
       .join("\n\n---\n\n");
     copyText(text);
   }
@@ -911,7 +911,7 @@ export function BoardroomApp() {
             </h2>
             <p className="text-xs text-stone-500">
               {tab === "profile" ? `The team knows you as ${bundle?.profile?.preferred_name || "CEO"}.` : channel === "brainstorming"
-                ? "Tony chairs the room — advisors speak, challenge turns run, Tony closes with the decision."
+                ? "Tony chairs the room: advisors speak, challenge turns run, Tony closes with the decision."
                 : `${ADVISOR_META[channel]?.role || "Advisor"} · 1:1 work session`}
             </p>
             </div>
@@ -928,7 +928,7 @@ export function BoardroomApp() {
               </button>
             )}
             {channel === "brainstorming" && (
-              <label className="flex cursor-pointer items-center gap-2" title="Tony handles this alone — no advisor routing">
+              <label className="flex cursor-pointer items-center gap-2" title="Tony handles this alone; no advisor routing">
                 <span className="text-xs text-stone-500">Tony Only</span>
                 <div
                   onClick={() => setTonyOnly(v => !v)}
@@ -1032,7 +1032,7 @@ export function BoardroomApp() {
                 {messages.length > 0 && (messages[messages.length - 1]?.stage === "tony_close" || messages[messages.length - 1]?.stage === "tony_intake") && !busy && (
                   <div className="mb-4 flex justify-center">
                     <button
-                      onClick={() => setComposer("Continue the discussion. Pick up the most important unresolved thread — push it further, stress-test the conclusion, or surface anything the team glossed over. Close with a refined action plan.")}
+                      onClick={() => setComposer("Continue the discussion. Pick up the most important unresolved thread, push it further, stress-test the conclusion, or surface anything the team glossed over. Close with a refined action plan.")}
                       className="border border-stone-300 bg-white px-4 py-2 text-sm text-stone-500 hover:border-teal hover:text-teal transition-colors"
                     >
                       ↩ Continue Discussion
@@ -1118,7 +1118,7 @@ export function BoardroomApp() {
                       type="password"
                       value={clientKey}
                       onChange={(e) => saveClientKey(e.target.value)}
-                      placeholder="DeepSeek API key (optional — uses server key if blank)"
+                      placeholder="DeepSeek API key (optional; uses server key if blank)"
                     />
                     {busy ? (
                       <button
@@ -1172,7 +1172,7 @@ export function BoardroomApp() {
               <Upload size={20} className="text-stone-400" />
               <div>
                 <div className="font-bold text-sm">Upload a document</div>
-                <div className="text-xs text-stone-500">.txt, .md, .pdf, or .docx — injected into every session</div>
+                <div className="text-xs text-stone-500">.txt, .md, .pdf, or .docx (injected into every session)</div>
               </div>
               <input className="hidden" type="file" accept=".txt,.md,.pdf,.docx" onChange={(e) => e.target.files?.[0] && uploadDocument(e.target.files[0])} />
             </label>
