@@ -105,6 +105,7 @@ type WorkspaceBundle = {
   settings: { guardrails?: string } | null;
   profile: BoardroomProfile | null;
   lastConversation?: LastConversation | null;
+  budget?: { rule: string; notice: string | null };
 };
 
 type Toast = { id: number; message: string };
@@ -970,6 +971,12 @@ export function BoardroomApp() {
                   </div>
                 ) : null}
 
+                {bundle?.budget?.notice ? (
+                  <div className="mx-auto mb-4 max-w-3xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900" role="status" data-boardroom-budget-notice>
+                    {bundle.budget.notice}
+                  </div>
+                ) : null}
+
                 {messages.map((message) => (
                   <article key={message.id} className={`group mb-3 ${message.role === "user" ? "flex justify-end" : ""}`}>
                     {message.role === "user" ? (
@@ -1213,6 +1220,7 @@ export function BoardroomApp() {
               <h3 className="mb-1 flex items-center gap-2 font-serif text-lg font-bold"><Briefcase size={16} /> Workspace</h3>
               <p className="text-xs text-stone-500 mb-3">{bundle?.workspace.name} · {bundle?.workspace.slug}</p>
               <p className="mb-3 text-xs leading-5 text-stone-500" data-boardroom-data-note>{DATA_NOTE}</p>
+              {bundle?.budget?.rule ? <p className="mb-3 text-xs leading-5 text-stone-500" data-boardroom-budget-rule>{bundle.budget.rule}</p> : null}
               <div className="flex flex-wrap gap-3">
                 <button className="flex items-center gap-2 border border-stone-300 px-4 py-2 text-sm font-bold transition-colors hover:border-teal hover:text-teal" onClick={() => setTab("profile")}>
                   <UserRound size={14} /> Edit profile

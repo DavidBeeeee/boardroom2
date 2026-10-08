@@ -73,13 +73,30 @@ export async function assertDeepSeekBudget(
   const status = await checkDeepSeekBudget(supabase, workspaceId);
   if (status.calls >= status.maxCalls) {
     throw new BudgetExceededError(
-      `Boardroom usage limit reached: ${status.calls} advisor calls in the last ${status.windowHours}h (cap ${status.maxCalls}). Try again later.`,
+      `You've reached this workspace's advisor limit for the last ${status.windowHours} hours (${status.calls} of ${status.maxCalls} calls). The room opens again as older activity ages out of the window. Nothing you've saved is affected.`,
     );
   }
   if (status.tokens >= status.maxTokens) {
     throw new BudgetExceededError(
-      `Boardroom usage limit reached: ${status.tokens.toLocaleString()} tokens in the last ${status.windowHours}h (cap ${status.maxTokens.toLocaleString()}). Try again later.`,
+      `You've reached this workspace's advisor limit for the last ${status.windowHours} hours. The room opens again as older activity ages out of the window. Nothing you've saved is affected.`,
     );
   }
   return status;
+}
+
+// Telling the member the rule before they hit it (WBR-373 continuation,
+// Stranger 26, 68). The plain rule always shows in Settings; the warning shows
+// once a workspace has used 75% of either cap in the current window.
+export const BUDGET_WARN_AT = 0.75;
+
+export function budgetRule(status: Pick<BudgetStatus, "windowHours">): string {
+  return `Each workspace can run a set amount of advisor work in any rolling ${status.windowHours} hours. A full Boardroom session uses about 8 to 12 advisor calls, so the limit only matters on a very heavy day. If you reach it, the room pauses and opens again as older activity ages out of the window. Nothing you've saved is affected.`;
+}
+
+export function budgetNotice(status: BudgetStatus): string | null {
+  const used = Math.max(status.calls / status.maxCalls, status.tokens / status.maxTokens);
+  if (!Number.isFinite(used) || used < BUDGET_WARN_AT) return null;
+  const pct = Math.min(100, Math.round(used * 100));
+  if (used >= 1) return `You've used all of this workspace's advisor capacity for the last ${status.windowHours} hours. The room opens again as older activity ages out of the window. Nothing you've saved is affected.`;
+  return `Heads up: you've used about ${pct}% of this workspace's advisor capacity for the last ${status.windowHours} hours. A full session uses about 8 to 12 advisor calls, so Quick depth or Tony Only will stretch what's left.`;
 }
