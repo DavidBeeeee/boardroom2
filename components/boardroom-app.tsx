@@ -153,9 +153,11 @@ export function BoardroomApp() {
   // ── Auth & Load ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const storedTheme = localStorage.getItem("sis_theme_v1") === "dark" ? "dark" : "light";
+    const stored = localStorage.getItem("sis_theme_v1");
+    const isDark = stored === "dark" || (!stored && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const storedTheme = isDark ? "dark" : "light";
     setTheme(storedTheme);
-    document.documentElement.classList.toggle("dark", storedTheme === "dark");
+    document.documentElement.classList.toggle("dark", isDark);
     setClientKey(sessionStorage.getItem(SESSION_KEY) || "");
     supabase.auth.getSession().then(({ data }) => {
       const token = data.session?.access_token || "";
