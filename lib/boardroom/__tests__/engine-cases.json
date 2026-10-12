@@ -1,0 +1,60 @@
+{
+  "note": "WBR-373, Developer 45 and 51 to 57. The contract for how the room routes messy member input and for the invented-progress guard. Every case runs through the real engine with DeepSeek stubbed at the transport; no network call is allowed. Add a case before changing a rule in input-kind.ts or claims.ts.",
+  "cases": [
+    { "id": "vague-grow", "kind": "vague", "text": "How do I grow?", "model": "route_many_questions", "expect": "one_clarifying_question" },
+    { "id": "vague-stuck", "kind": "vague", "text": "I'm stuck, what should I do?", "model": "route_many_questions", "expect": "one_clarifying_question" },
+    { "id": "broad-everything", "kind": "broad", "text": "Fix everything in my business, marketing, sales, offer, all of it", "model": "route_many_questions", "expect": "one_clarifying_question" },
+    { "id": "broad-whole-business", "kind": "broad", "text": "Where do I even start with my whole business?", "model": "no_question", "expect": "one_clarifying_question" },
+    { "id": "measure-successful", "kind": "hard_to_measure", "text": "I want to feel more successful in my coaching practice this year", "model": "route_plain", "expect": "guidance:observable signal" },
+    { "id": "measure-known", "kind": "hard_to_measure", "text": "I want my brand to be more known in the wellness space", "model": "route_plain", "expect": "guidance:observable signal" },
+    { "id": "conflict-work-less", "kind": "conflicting", "text": "I want to work less and double my revenue by spring", "model": "route_plain", "expect": "names_conflict" },
+    { "id": "conflict-no-sales", "kind": "conflicting", "text": "I need more clients but I don't want to do any sales calls", "model": "clarify_plain", "expect": "names_conflict" },
+    { "id": "distinction-hope", "kind": "concept_distinction", "text": "I hope to have a waitlist of coaching clients someday", "model": "route_plain", "expect": "guidance:a hope, not a goal" },
+    { "id": "distinction-preference", "kind": "concept_distinction", "text": "I'd rather do group programs than one to one coaching", "model": "route_plain", "expect": "guidance:a preference, not a decision" },
+    { "id": "filler-hmm", "kind": "filler", "text": "hmm", "model": "route_plain", "expect": "short_prompt_no_model_call" },
+    { "id": "filler-dots", "kind": "filler", "text": "...", "model": "route_plain", "expect": "short_prompt_no_model_call" },
+    { "id": "unusual-url", "kind": "unusual", "text": "https://example.com/my-sales-page", "model": "route_plain", "expect": "short_prompt_no_model_call" },
+    { "id": "unusual-emoji", "kind": "unusual", "text": "🔥", "model": "route_plain", "expect": "short_prompt_no_model_call" },
+    { "id": "unusual-spanish", "kind": "unusual", "text": "¿Cómo puedo conseguir mis primeros diez clientes este mes?", "model": "route_plain", "expect": "guidance:Reply in their language" },
+    { "id": "unusual-garbled-model", "kind": "unusual", "text": "🚀🚀🚀", "model": "garbage", "expect": "short_prompt_no_model_call" },
+    { "id": "clear-control", "kind": "clear", "text": "Should I move my coaching price from $500 to $750 for my next cohort of 8 clients?", "model": "route_plain", "expect": "routes_to_advisors" }
+  ],
+  "claims": [
+    {
+      "id": "invented-launch-and-clients",
+      "member": ["I'm thinking about starting a waitlist for my group program."],
+      "card": { "title": "Follow up with the new clients", "context": "You already launched the waitlist page and signed 12 clients.", "desiredOutput": "A welcome email for the 12 clients." },
+      "expectUnsupported": true
+    },
+    {
+      "id": "supported-launch",
+      "member": ["I launched my waitlist last week and 3 people joined."],
+      "card": { "title": "Email the waitlist", "context": "You launched the waitlist last week and 3 people joined.", "desiredOutput": "A short email to the 3 people on it." },
+      "expectUnsupported": false
+    },
+    {
+      "id": "number-mismatch",
+      "member": ["I signed 3 clients from the challenge."],
+      "card": { "title": "Onboard the cohort", "context": "You signed 12 clients from the challenge.", "desiredOutput": "An onboarding checklist." },
+      "expectUnsupported": true
+    },
+    {
+      "id": "plan-is-not-a-claim",
+      "member": ["I want a waitlist."],
+      "card": { "title": "Build the waitlist", "context": "Next, you will launch the waitlist page and send it to your list.", "desiredOutput": "A one page waitlist." },
+      "expectUnsupported": false
+    },
+    {
+      "id": "invented-revenue",
+      "member": ["The beta is still being planned."],
+      "card": { "title": "Price the full launch", "context": "You made $4,000 from the beta, so the offer is proven.", "desiredOutput": "A price for the full launch." },
+      "expectUnsupported": true
+    },
+    {
+      "id": "invented-done-label",
+      "member": ["Can you help me outline a sales page?"],
+      "card": { "title": "Sales page", "context": "Completed: sales page draft and checkout link.", "desiredOutput": "Publish the page." },
+      "expectUnsupported": true
+    }
+  ]
+}

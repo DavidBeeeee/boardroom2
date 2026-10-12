@@ -12,6 +12,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 //                     or parse_fallback (the call returned but its JSON could
 //                     not be parsed and a fallback was used)
 //   - "state_write"   every state-changing write to a boardroom_* table
+//   - "safety"        a member message tripped the crisis check
+//   - "unsupported_claim" a card or memory write claimed unreported progress
 //
 // Logging is best-effort and must NEVER break a request or an LLM call: every
 // write is fire-and-forget, failures are swallowed (surfaced to the server
@@ -19,7 +21,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // Writes go through the caller's RLS-scoped client, so a workspace's logs are
 // walled off exactly like its messages.
 
-export type LogEventType = "turn" | "deepseek_call" | "state_write" | "safety";
+export type LogEventType = "turn" | "deepseek_call" | "state_write" | "safety" | "unsupported_claim";
 
 export type LogStatus =
   | "success"
@@ -70,6 +72,9 @@ export type BoardroomLogger = {
   // A member message tripped the crisis check (WBR-373 Stream B). Records the
   // category and pattern id only, never the member's words.
   safety(input: { category: string; patternId: string; stage?: string }): void;
+  // A card or memory write claimed progress the member never reported, and was
+  // rewritten as a proposal (WBR-373, Developer 45). Counts only, never text.
+  unsupportedClaim(input: { target: "card" | "memory"; claims: number; unsupported: number; stage?: string }): void;
   flush(): Promise<void>;
 };
 
@@ -161,6 +166,15 @@ export function createBoardroomLogger(
         stage: input.stage ?? "safety_pause",
         speaker: "AI Boardroom",
         detail: { category: input.category, patternId: input.patternId, advisorRoundsSkipped: true },
+      });
+    },
+    unsupportedClaim(input) {
+      enqueue({
+        ...base(),
+        event_type: "unsupported_claim",
+        status: "ok",
+        stage: input.stage ?? "",
+        detail: { target: input.target, claims: input.claims, unsupported: input.unsupported, rewrittenAsProposal: true },
       });
     },
     async flush() {

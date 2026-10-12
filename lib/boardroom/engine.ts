@@ -2,6 +2,8 @@ import type { AdvisorName, BoardroomTurn, GeneratedCard, Message, ModeContext } 
 import { ALL_ADVISORS, formatAdvisorVoiceContract, formatAdvisorVoicePacket, BOARDROOM_GUARDRAILS, type PersonaAudience } from "./advisors";
 import { callDeepSeek, type ChatMessage } from "./deepseek";
 import type { BoardroomLogger, LogMeta } from "./logging";
+import { classifyMemberInput, fallbackClarifyFor, intakeGuidanceFor, oneQuestion, shortPromptFor, type InputClassification } from "./input-kind";
+import { guardClaims, memberEvidence } from "./claims";
 
 // ── Session State (passed between frontend and API stages) ────────────────────
 
@@ -126,6 +128,32 @@ export function normalizeCards(cards: GeneratedCard[], mode: ModeContext, decisi
       externalTarget: c.externalTarget ?? "",
     }))
     .slice(0, mode.cardLimit);
+}
+
+export function guardCards(cards: GeneratedCard[], evidence: string[]): { cards: GeneratedCard[]; claims: number; unsupported: number } {
+  let claims = 0;
+  let unsupported = 0;
+  const out = cards.map(card => {
+    let cardUnsupported = 0;
+    const fix = (text: string | undefined) => {
+      if (!text) return text ?? "";
+      const r = guardClaims(text, evidence);
+      claims += r.claims;
+      unsupported += r.unsupported;
+      cardUnsupported += r.unsupported;
+      return r.text;
+    };
+    const next = { ...card, title: fix(card.title).slice(0, 160), context: fix(card.context), desiredOutput: fix(card.desiredOutput) };
+    return cardUnsupported ? { ...next, status: "suggested" as const, inputs: { ...(next.inputs ?? {}), unconfirmedClaims: cardUnsupported } } : next;
+  });
+  return { cards: out, claims, unsupported };
+}
+
+// Guards a workspace memory write the same way and logs the rewrite.
+export function guardMemoryContent(content: string, evidence: string[], log?: BoardroomLogger, stage = "session_summary"): string {
+  const r = guardClaims(content, evidence);
+  if (r.unsupported) log?.unsupportedClaim({ target: "memory", claims: r.claims, unsupported: r.unsupported, stage });
+  return r.text;
 }
 
 function nextStageFor(state: SessionState, mode: ModeContext): StageResult["nextStage"] {
@@ -327,6 +355,19 @@ OUTPUT FORMAT — brief Tony message first, then the JSON block:
   // EXCEPTION: if the user has already committed to a bold/moonshot goal, Tony MUST route — no clarifying.
   const commitment = detectUserCommitment(input.history, input.userPrompt);
   const mustRoute = commitment.hasCommitted;
+
+  // Read the message before spending a model call on it (WBR-373, Developer
+  // 51 to 57). Filler, a bare link or a lone emoji gets a short prompt back
+  // and no advisor round.
+  const inputKind = classifyMemberInput(input.userPrompt);
+  if (!mustRoute && (inputKind.kind === "filler" || inputKind.variant === "url_only" || inputKind.variant === "emoji_only")) {
+    return {
+      turns: [{ speaker: "Tony", stage: "tony_clarify", content: shortPromptFor(inputKind, input.ceoName) }],
+      sessionState: null,
+      nextStage: "clarify",
+    };
+  }
+  const inputGuidance = mustRoute ? "" : intakeGuidanceFor(inputKind);
   const commitmentInstruction = mustRoute
     ? `\n\nCRITICAL OVERRIDE — DO NOT CLARIFY: David has already committed to his goal (${commitment.commitmentLevel} level). He has given explicit consent. DO NOT ask another clarifying question. You MUST route the team now with the full ambition he stated. Tony Robbins does not flinch when a CEO commits — he builds the plan.\n`
     : "";
@@ -341,6 +382,7 @@ ${formatAdvisorVoiceContract("Tony", "intake", input.audience)}
 
 ${input.context}
 ${commitmentInstruction}
+${inputGuidance}
 DECISION — do you have enough information to route this to the advisors right now?
 
 IF YOU NEED ONE PIECE OF INFORMATION FIRST (only if David has NOT already committed to a goal):
@@ -377,6 +419,17 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
 
   // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
   // If mustRoute is true, Tony should not clarify — force routing.
+  // Vague or broad input never starts advisor rounds: Tony asks exactly one
+  // clarifying question, whatever the model chose to do.
+  if (!mustRoute && (inputKind.kind === "vague" || inputKind.kind === "broad")) {
+    const question = oneQuestion(rawTonyResponse.replace(/^Tony:\s*/i, "")) || fallbackClarifyFor(inputKind, input.ceoName);
+    return {
+      turns: [{ speaker: "Tony", stage: "tony_clarify", content: question }],
+      sessionState: null,
+      nextStage: "clarify",
+    };
+  }
+
   const hasJsonBlock = rawTonyResponse.includes("```");
   if (!hasJsonBlock) {
     if (mustRoute) {
@@ -397,7 +450,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
       };
       return { turns: forcedState.allTurns, sessionState: forcedState, nextStage: nextStageFor(forcedState, input.mode) };
     }
-    const clarifyMessage = rawTonyResponse.trim();
+    const clarifyMessage = nameConflict(rawTonyResponse.trim(), inputKind);
     return {
       turns: [{ speaker: "Tony", stage: "tony_clarify", content: clarifyMessage }],
       sessionState: null,
@@ -421,6 +474,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     tonyMessage = `${input.ceoName || "CEO"}, I have the signal. Let me bring the right people in.`;
   }
 
+  tonyMessage = nameConflict(tonyMessage, inputKind);
   const turns: BoardroomTurn[] = [{ speaker: "Tony", stage: "tony_intake", content: tonyMessage }];
 
   let selectedAdvisors: AdvisorName[] = (routing.selectedAdvisors ?? [])
@@ -444,7 +498,9 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     tonyIntakeMessage: tonyMessage,
     selectedAdvisors,
     advisorQuestions: routing.advisorQuestions ?? {},
-    tension: routing.tension || "",
+    tension: inputKind.conflict && !CONFLICT_NAMED.test(routing.tension || "")
+      ? `Conflict: ${inputKind.conflict.a} versus ${inputKind.conflict.b}.${routing.tension ? ` ${routing.tension}` : ""}`
+      : routing.tension || "",
     allTurns: turns,
     currentRound: 0,
     currentChanosRound: 0,
@@ -455,6 +511,16 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
     sessionState,
     nextStage: nextStageFor(sessionState, input.mode),
   };
+}
+
+// Conflicting input is named out loud. If the model's reply does not already
+// name a conflict, the room opens with one plain sentence that does.
+const CONFLICT_NAMED = /\b(conflict|pull(s|ing)? against|tension|trade-?off|at odds|contradict|both at once)/i;
+function nameConflict(message: string, kind: InputClassification): string {
+  if (kind.kind !== "conflicting" || !kind.conflict) return message;
+  if (CONFLICT_NAMED.test(message)) return message;
+  const naming = `You want ${kind.conflict.a} and ${kind.conflict.b}, and those pull against each other.`;
+  return message ? `${naming}\n\n${message}` : fallbackClarifyFor(kind);
 }
 
 // ── STAGE 2: Advisor Group Round ──────────────────────────────────────────────
@@ -756,9 +822,16 @@ THE CHECKPOINT: how David will know this worked]
     content: closeMessage,
   };
 
+  // Invented-progress guard (Developer 45): a card may not record a completed
+  // step, outcome or number the member never reported in this conversation.
+  const guarded = guardCards(normalizeCards(cards, mode, decision), memberEvidence(input.history, sessionState.userPrompt));
+  if (guarded.unsupported) {
+    input.log?.unsupportedClaim({ target: "card", claims: guarded.claims, unsupported: guarded.unsupported, stage: "tony_close" });
+  }
+
   return {
     turns: [turn],
-    cards: normalizeCards(cards, mode, decision),
+    cards: guarded.cards,
     tension: sessionState.tension,
     nextStage: "done",
     sessionState: { ...sessionState, allTurns: [...sessionState.allTurns, turn] },

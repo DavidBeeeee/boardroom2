@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempotencyKey, WorkspaceAccessError, workspaceLocked, workspaceOwnerIsAdmin } from "@/lib/supabase/server";
 import { memoryForChannel } from "@/lib/boardroom/lapse";
 import { buildBoardroomContext } from "@/lib/boardroom/context";
-import { runAdvisorRound, runChanosRound, runTonyClose, normalizeCards } from "@/lib/boardroom/engine";
+import { runAdvisorRound, runChanosRound, runTonyClose, guardMemoryContent } from "@/lib/boardroom/engine";
+import { memberEvidence } from "@/lib/boardroom/claims";
 import type { SessionState } from "@/lib/boardroom/engine";
 import { modeContext } from "@/lib/boardroom/mode";
 import { createBoardroomLogger } from "@/lib/boardroom/logging";
@@ -186,7 +187,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
               sessionState.tension ? `Tension: ${sessionState.tension}` : "",
               `Advisors: ${sessionState.selectedAdvisors.join(", ")}`,
               result.cards.length ? `Cards: ${result.cards.map(c => c.title).join(" | ")}` : "",
-              `Decision: ${closeContent.slice(0, 800)}`,
+              `Decision: ${guardMemoryContent(closeContent.slice(0, 800), memberEvidence((previousMessages.data || []) as Message[], sessionState.userPrompt), logger)}`,
             ].filter(Boolean).join("\n"),
             metadata: { conversationId, channel: "brainstorming", tension: sessionState.tension, source: "stage_route" }
           });

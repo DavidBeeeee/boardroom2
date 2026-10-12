@@ -3,7 +3,8 @@ import { createRequestSupabase, ensureWorkspaceMember, jsonError, requestIdempot
 import { crisisResponse, detectCrisis } from "@/lib/boardroom/safety";
 import { conversationMatchesChannel, memoryForChannel } from "@/lib/boardroom/lapse";
 import { buildBoardroomContext } from "@/lib/boardroom/context";
-import { runTonyIntake } from "@/lib/boardroom/engine";
+import { guardMemoryContent, runTonyIntake } from "@/lib/boardroom/engine";
+import { memberEvidence } from "@/lib/boardroom/claims";
 import { modeContext } from "@/lib/boardroom/mode";
 import { createBoardroomLogger } from "@/lib/boardroom/logging";
 import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
@@ -201,7 +202,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
         await session.supabase.from("boardroom_memory_entries").insert({
           workspace_id: workspaceId,
           kind: "session_summary",
-          content: `Prompt: ${text.slice(0, 300)}\nResponse: ${lastMsg.content.slice(0, 800)}`,
+          content: `Prompt: ${text.slice(0, 300)}\nResponse: ${guardMemoryContent(lastMsg.content.slice(0, 800), memberEvidence((previousMessages.data || []) as Message[], text), logger)}`,
           metadata: { conversationId, channel, source: "chat_route" }
         }).throwOnError();
         logger.stateWrite({ table: "boardroom_memory_entries", stage: "session_summary" });
