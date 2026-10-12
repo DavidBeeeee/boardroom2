@@ -10,6 +10,7 @@ import { createBoardroomLogger } from "@/lib/boardroom/logging";
 import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
 import { createSupabaseIdempotencyStore, withIdempotency } from "@/lib/boardroom/idempotency";
 import { decisionMetadataForTurn } from "@/lib/boardroom/decision";
+import { stageFailureNotice, type FailedService } from "@/lib/boardroom/degraded";
 import type { AdvisorCard, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -18,11 +19,21 @@ export const maxDuration = 60;
 // Thrown so withIdempotency releases the claimed key and a genuine retry can run.
 class StageError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  extra: Record<string, unknown>;
+  constructor(message: string, status: number, extra: Record<string, unknown> = {}) {
     super(message);
     this.name = "StageError";
     this.status = status;
+    this.extra = extra;
   }
+}
+
+// Degraded mode (Developer 81 to 83): a plain notice the member can act on,
+// with Retry continuing from the failed stage. Raw error to the console only.
+function degradedStage(error: unknown, service?: FailedService) {
+  console.error("[boardroom stage]", error instanceof Error ? error.message : (error as { message?: string })?.message ?? error);
+  const notice = stageFailureNotice(error, service);
+  return new StageError(notice.message, 503, { retryable: true, failedService: notice.service });
 }
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceId: string }> }) {
@@ -63,8 +74,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     });
   } catch (error) {
     if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
-    if (error instanceof StageError) return jsonError(error.message, error.status);
-    throw error;
+    if (error instanceof StageError) return NextResponse.json({ error: error.message, ...error.extra }, { status: error.status });
+    const notice = degradedStage(error);
+    return NextResponse.json({ error: notice.message, ...notice.extra }, { status: notice.status });
   }
 
   if (outcome.kind === "in_flight") {
@@ -82,12 +94,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       session.supabase.from("boardroom_profiles").select("*").eq("workspace_id", workspaceId).maybeSingle(),
       session.supabase.from("boardroom_documents").select("name,extracted_text").eq("workspace_id", workspaceId).eq("status", "ready").order("created_at", { ascending: false }).limit(8),
       session.supabase.from("boardroom_memory_entries").select("kind,content,metadata").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(40),
-      session.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(12),
+      session.supabase.from("boardroom_messages").select("*").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(12),
       workspaceOwnerIsAdmin(session.supabase, workspaceId),
     ]);
 
     const loadError = settings.error || profile.error || documents.error || memory.error || previousMessages.error;
-    if (loadError) throw new StageError(loadError.message, 500);
+    // Loaded newest first so a long conversation keeps its latest turns; the
+    // engine reads them oldest first.
+    previousMessages.data?.reverse();
+    if (loadError) throw degradedStage(loadError, "database");
 
     const contextText = buildBoardroomContext({
       guardrails: settings.data?.guardrails || "",
@@ -143,7 +158,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       if (messageError) {
         logger.stateWrite({ table: "boardroom_messages", status: "error", stage: nextStage, detail: { error: messageError.message, count: messageRows.length } });
         await logger.flush();
-        throw new StageError(messageError.message, 500);
+        throw degradedStage(messageError, "database");
       }
       logger.stateWrite({ table: "boardroom_messages", stage: nextStage, detail: { count: messageRows.length } });
 
@@ -206,13 +221,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     } catch (error) {
       if (error instanceof StageError) throw error;
       const message = error instanceof Error ? error.message : "Stage error.";
-      logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "error", detail: { error: message } });
-      await session.supabase.from("boardroom_messages").insert({
-        workspace_id: workspaceId, conversation_id: conversationId,
-        role: "system", speaker: "System", content: message, stage: "error"
-      });
+      const failure = degradedStage(error);
+      logger.stateWrite({ table: "boardroom_messages", status: "error", stage: "error", detail: { error: message, failedService: failure.extra.failedService } });
       await logger.flush();
-      throw new StageError(message, 500);
+      throw failure;
     }
   }
 }

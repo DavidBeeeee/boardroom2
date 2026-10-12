@@ -83,6 +83,21 @@ const DATA_NOTE = "If your Boardroom access ends, your workspace stays exactly a
 const LOCKED_CODE = "boardroom_locked";
 const HELP_EMAIL = "email@davidbee.me";
 
+// A failed request that carries the server's plain-language notice and what the
+// client needs to retry it (degraded mode, Developer 81 to 83).
+class RequestError extends Error {
+  payload: Record<string, unknown>;
+  constructor(message: string, payload: Record<string, unknown>) {
+    super(message);
+    this.name = "RequestError";
+    this.payload = payload;
+  }
+}
+
+type RetryPlan =
+  | { kind: "chat"; text: string; channel: string; tonyOnly: boolean; userMessageId: string | null }
+  | { kind: "stage"; conversationId: string; nextStage: string; sessionState: unknown };
+
 class LockedError extends Error {
   constructor(message: string) {
     super(message);
@@ -233,7 +248,7 @@ export function BoardroomApp() {
       setAccessError(payload.error || "AI Boardroom is locked.");
       throw new LockedError(payload.error || "AI Boardroom is locked.");
     }
-    if (!res.ok) throw new Error(payload.error || `Request failed: ${res.status}`);
+    if (!res.ok) throw new RequestError(payload.error || `Request failed: ${res.status}`, payload);
     return payload;
   }
 
@@ -387,16 +402,17 @@ export function BoardroomApp() {
         flushSync(() => setTypingAdvisor(null));
         if (abortRef.current?.signal.aborted || error instanceof LockedError) break;
         const msg = error instanceof Error ? error.message : "Stage error.";
-        showToast(`❌ ${msg}`);
+        const retryable = error instanceof RequestError && error.payload.retryable === true;
+        const retry: RetryPlan = { kind: "stage", conversationId: convId, nextStage: currentStage, sessionState: currentState };
         flushSync(() => setMessages(current => [...current, {
           id: `err-${Date.now()}`,
           workspace_id: workspaceId,
           conversation_id: convId,
           role: "system" as const,
           speaker: "System",
-          content: `⚠️ Stage failed (${currentStage}): ${msg}`,
+          content: retryable ? msg : `Stage failed (${currentStage}): ${msg}`,
           stage: "error",
-          metadata: {},
+          metadata: retryable ? { retry } : {},
           created_at: new Date().toISOString(),
         }]));
         break;
@@ -415,7 +431,7 @@ export function BoardroomApp() {
     }
   }
 
-  async function sendMessage(overrideText?: string, overrideTonyOnly?: boolean, overrideChannel?: (typeof CHANNELS)[number]) {
+  async function sendMessage(overrideText?: string, overrideTonyOnly?: boolean, overrideChannel?: (typeof CHANNELS)[number], retryUserMessageId?: string) {
     const text = (overrideText ?? composer).trim();
     if (!text || !workspaceId) return;
 
@@ -431,7 +447,9 @@ export function BoardroomApp() {
       setComposer("");
       setTypingAdvisor("Tony");
     });
-    flushSync(() => {
+    // On a Retry whose message the server already saved, the bubble is already
+    // on screen; don't add a second one.
+    if (!retryUserMessageId) flushSync(() => {
       setMessages(current => [...current, {
         id: pendingId,
         workspace_id: workspaceId,
@@ -458,6 +476,7 @@ export function BoardroomApp() {
           clientApiKey: clientKey || undefined,
           cardId: activeCardId || undefined,
           tonyOnly: (overrideTonyOnly ?? tonyOnly) && sendChannel === "brainstorming",
+          retryUserMessageId: retryUserMessageId || undefined,
         })
       });
 
@@ -505,19 +524,58 @@ export function BoardroomApp() {
       flushSync(() => setTypingAdvisor(null));
       if (controller.signal.aborted || error instanceof LockedError) return;
       const msg = error instanceof Error ? error.message : "Boardroom error.";
-      showToast(`❌ ${msg}`);
-      // Show error inline in chat too so it's unmissable
-      flushSync(() => setMessages(current => [...current, {
-        id: `err-${Date.now()}`,
-        workspace_id: workspaceId,
-        conversation_id: conversationId,
-        role: "system" as const,
-        speaker: "System",
-        content: `⚠️ ${msg}`,
-        stage: "error",
-        metadata: {},
-        created_at: new Date().toISOString(),
-      }]));
+      const payload = error instanceof RequestError ? error.payload : {};
+      const retryable = payload.retryable === true;
+      const savedId = typeof payload.userMessageId === "string" ? payload.userMessageId : (retryUserMessageId ?? null);
+      const failedConversation = typeof payload.conversationId === "string" ? payload.conversationId : "";
+      if (failedConversation && failedConversation !== conversationId) {
+        setConversationId(failedConversation);
+        setChannelConvIds(prev => ({ ...prev, [sendChannel]: failedConversation }));
+      }
+      const retry: RetryPlan = { kind: "chat", text, channel: sendChannel, tonyOnly: (overrideTonyOnly ?? tonyOnly) && sendChannel === "brainstorming", userMessageId: savedId };
+      flushSync(() => {
+        // Keep the member's words: if the server never saved the message, it
+        // goes back in the composer; if it did, the bubble stays as sent.
+        if (!savedId) {
+          setMessages(current => current.filter(m => m.id !== pendingId));
+          setComposer(current => current.trim() ? current : text);
+        } else {
+          setMessages(current => current.map(m => m.id === pendingId ? { ...m, id: savedId } : m));
+        }
+        setMessages(current => [...current, {
+          id: `err-${Date.now()}`,
+          workspace_id: workspaceId,
+          conversation_id: failedConversation || conversationId,
+          role: "system" as const,
+          speaker: "System",
+          content: retryable ? msg : `⚠️ ${msg}`,
+          stage: "error",
+          metadata: retryable ? { retry } : {},
+          created_at: new Date().toISOString(),
+        }]);
+      });
+      if (!retryable) showToast(`❌ ${msg}`);
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusy(false);
+    }
+  }
+
+  // Retry a failed turn or stage from the notice the member saw.
+  async function retryFailed(errorMessageId: string, plan: RetryPlan) {
+    if (busy) return;
+    flushSync(() => setMessages(current => current.filter(m => m.id !== errorMessageId)));
+    if (plan.kind === "chat") {
+      if (!plan.userMessageId) setComposer(current => current.trim() === plan.text.trim() ? "" : current);
+      await sendMessage(plan.text, plan.tonyOnly, plan.channel as (typeof CHANNELS)[number], plan.userMessageId ?? undefined);
+      return;
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy(true);
+    try {
+      await runSessionStages({ conversationId: plan.conversationId, nextStage: plan.nextStage, sessionState: plan.sessionState });
+      await refreshBundle(workspaceId);
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setBusy(false);
@@ -994,8 +1052,18 @@ export function BoardroomApp() {
                         </button>
                       </div>
                     ) : message.role === "system" ? (
-                      <div className="max-w-4xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      <div className="max-w-4xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" data-boardroom-failure>
                         {message.content}
+                        {(message.metadata as { retry?: RetryPlan } | null)?.retry ? (
+                          <button
+                            onClick={() => retryFailed(message.id, (message.metadata as { retry: RetryPlan }).retry)}
+                            disabled={busy}
+                            className="ml-3 border border-red-300 bg-white px-3 py-1 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                            data-boardroom-retry
+                          >
+                            Retry
+                          </button>
+                        ) : null}
                       </div>
                     ) : (
                       <div className={`relative max-w-4xl border bg-white px-4 py-3 ${stageColor(message.stage, message.speaker)}`}>
