@@ -24,7 +24,9 @@ type Pattern = { id: string; category: CrisisCategory; re: RegExp };
 const PATTERNS: Pattern[] = [
   { id: "kill_myself", category: "suicide", re: /\b(kill|killing|off)\s+(my\s*self|myself)\b/ },
   { id: "suicide_word", category: "suicide", re: /\b(suicid(e|al)|end it all|take my (own )?life|end my (own )?life|ending my life)\b/ },
-  { id: "want_to_die", category: "suicide", re: /\b(i\s+)?(want|wanna|wish(ed)?|going|plan(ning)?)\s+(to\s+)?(die|be dead)\b/ },
+  // "Going to die" is deliberately absent (2026-10-12): "I'm going to die one
+  // day" is ordinary talk about mortality. Wanting or planning to die trips.
+  { id: "want_to_die", category: "suicide", re: /\b(i\s+)?(want|wanna|wish(ed)?|plan(ning)?)\s+(to\s+)?(die|be dead)\b/ },
   { id: "not_be_here", category: "suicide", re: /\b(don'?t|do not)\s+want\s+to\s+(be here|be alive|live|wake up)( anymore| any more)?\b/ },
   { id: "better_off", category: "suicide", re: /\b(better off (dead|without me)|no (reason|point) (to|in) (live|living|being alive|going on))\b/ },
   { id: "cant_go_on", category: "suicide", re: /\b(can'?t|cannot)\s+(go on|keep going|do this)\s+(anymore|any more)\b.*\b(life|living|alive|die|myself)\b/ },
