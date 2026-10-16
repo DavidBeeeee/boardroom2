@@ -7,7 +7,7 @@ import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const run = spawnSync(process.execPath, [
-  "--import", "tsx", "--test",
+  "--import", "tsx", "--test", "--test-reporter=spec",
   "lib/boardroom/__tests__/safety.test.ts",
   "lib/boardroom/__tests__/persona.test.ts",
 ], { cwd: root, encoding: "utf8" });
