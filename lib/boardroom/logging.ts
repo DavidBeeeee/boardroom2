@@ -14,6 +14,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 //   - "state_write"   every state-changing write to a boardroom_* table
 //   - "safety"        a member message tripped the crisis check
 //   - "unsupported_claim" a card or memory write claimed unreported progress
+//   - "safety" with category "injection": a message or document tried to
+//                     rewrite the advisors' instructions (pattern id only)
+//   - "limit"         a request was refused by the burst rate limit or the
+//                     DeepSeek budget cap, so boardroom_alert can count them
 //
 // Logging is best-effort and must NEVER break a request or an LLM call: every
 // write is fire-and-forget, failures are swallowed (surfaced to the server
@@ -21,7 +25,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // Writes go through the caller's RLS-scoped client, so a workspace's logs are
 // walled off exactly like its messages.
 
-export type LogEventType = "turn" | "deepseek_call" | "state_write" | "safety" | "unsupported_claim";
+export type LogEventType = "turn" | "deepseek_call" | "state_write" | "safety" | "unsupported_claim" | "limit";
 
 export type LogStatus =
   | "success"
@@ -75,6 +79,12 @@ export type BoardroomLogger = {
   // A card or memory write claimed progress the member never reported, and was
   // rewritten as a proposal (WBR-373, Developer 45). Counts only, never text.
   unsupportedClaim(input: { target: "card" | "memory"; claims: number; unsupported: number; stage?: string }): void;
+  // A chat message or document tried to rewrite the advisors' instructions
+  // (WBR-373, Developer 97). Source and pattern id only, never the text.
+  injection(input: { source: "chat" | "document"; patternId: string; stage?: string }): void;
+  // A request was refused before any generation: the burst rate limit or the
+  // rolling DeepSeek budget cap (Developer 80, 97).
+  limit(input: { kind: "rate_limit" | "budget_cap"; scope: string; detail?: Record<string, unknown> }): void;
   flush(): Promise<void>;
 };
 
@@ -175,6 +185,25 @@ export function createBoardroomLogger(
         status: "ok",
         stage: input.stage ?? "",
         detail: { target: input.target, claims: input.claims, unsupported: input.unsupported, rewrittenAsProposal: true },
+      });
+    },
+    injection(input) {
+      enqueue({
+        ...base(),
+        event_type: "safety",
+        status: "ok",
+        stage: input.stage ?? "injection_guard",
+        speaker: "Tony",
+        detail: { category: "injection", patternId: input.patternId, source: input.source },
+      });
+    },
+    limit(input) {
+      enqueue({
+        ...base(),
+        event_type: "limit",
+        status: "ok",
+        stage: input.kind,
+        detail: { scope: input.scope, ...(input.detail ?? {}) },
       });
     },
     async flush() {

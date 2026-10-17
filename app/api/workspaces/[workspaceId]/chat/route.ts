@@ -10,6 +10,8 @@ import { createBoardroomLogger } from "@/lib/boardroom/logging";
 import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budget";
 import { createSupabaseIdempotencyStore, withIdempotency } from "@/lib/boardroom/idempotency";
 import { failureNotice, type FailedService } from "@/lib/boardroom/degraded";
+import { assertRateLimit, createSupabaseRateStore, RateLimitedError, rateLimitedBody } from "@/lib/boardroom/ratelimit";
+import { guardMemberInput } from "@/lib/boardroom/injection";
 import type { AdvisorName, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -51,12 +53,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       // Server-side DeepSeek cost/usage bound (Developer 99): refuse before
       // spending when this workspace is over its rolling window cap. Inside the
       // claim so a replay never re-checks or re-bills.
+      // Burst rate limit per member (Developer 97), before the budget so a
+      // runaway client is slowed down before it can drain the day's cap.
+      await assertRateLimit(createSupabaseRateStore(session.supabase), { workspaceId, userId: session.userId, scope: "chat" });
       await assertDeepSeekBudget(session.supabase, workspaceId);
 
       return await runChatTurn();
     });
   } catch (error) {
-    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
+    if (error instanceof RateLimitedError || error instanceof BudgetExceededError) {
+      // Counted for boardroom_alert (Developer 80); no member text.
+      const limitLog = createBoardroomLogger(session.supabase, { workspaceId, userId: session.userId });
+      if (error instanceof RateLimitedError) {
+        limitLog.limit({ kind: "rate_limit", scope: "chat", detail: { retryAfterSeconds: error.retryAfterSeconds } });
+        await limitLog.flush();
+        return NextResponse.json(rateLimitedBody(error), { status: 429, headers: { "Retry-After": String(error.retryAfterSeconds) } });
+      }
+      limitLog.limit({ kind: "budget_cap", scope: "chat" });
+      await limitLog.flush();
+      return jsonError(error.message, 429);
+    }
     if (error instanceof ChatTurnError) return NextResponse.json({ error: error.message, ...error.extra }, { status: error.status });
     // Degraded mode (Developer 81 to 83): never show a member a raw stack or
     // provider error. Say what failed in plain words and offer Retry.
@@ -167,10 +183,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     return { conversationId, userMessage, messages: safetyMessages || [], cards: [], nextStage: "done", sessionState: null, safety: true };
   }
 
+  // Prompt-injection guard (Developer 97): a message that tries to rewrite the
+  // advisors' instructions is answered by Tony alone as an ordinary request,
+  // and a document that tries it is fenced and marked. Pattern ids are logged,
+  // never the member's words.
+  const guarded = guardMemberInput({ text, documents: (documents.data || []).slice(0, 6) });
+  for (const finding of guarded.findings) logger.injection(finding);
+
   const contextText = buildBoardroomContext({
     guardrails: settings.data?.guardrails || "",
     profile: profile.data,
-    documents: documents.data || [],
+    documents: guarded.documents,
+    turnNote: guarded.turnNote,
     memory: memoryForChannel(memory.data || [], channel).slice(0, 8),
     recentMessages: previousMessages.data || [],
     activeCard: activeCard.data
@@ -184,8 +208,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
       history,
       mode,
       clientApiKey: body.clientApiKey ? String(body.clientApiKey) : undefined,
-      activeAdvisor,
-      tonyOnly: body.tonyOnly === true,
+      activeAdvisor: guarded.tonyOnly ? undefined : activeAdvisor,
+      tonyOnly: guarded.tonyOnly || body.tonyOnly === true,
       ceoName: profile.data?.preferred_name || "CEO",
       audience: ownerIsAdmin ? "owner" : "member",
       log: logger,

@@ -4,6 +4,7 @@ import { callDeepSeek, type ChatMessage } from "./deepseek";
 import type { BoardroomLogger, LogMeta } from "./logging";
 import { classifyMemberInput, fallbackClarifyFor, intakeGuidanceFor, oneQuestion, shortPromptFor, type InputClassification } from "./input-kind";
 import { guardClaims, memberEvidence } from "./claims";
+import { DATA_BOUNDARY_RULE, fenceMember } from "./injection";
 
 // ── Session State (passed between frontend and API stages) ────────────────────
 
@@ -47,7 +48,7 @@ export function canonicalAdvisor(name: unknown): AdvisorName {
 export function historyMessages(history: Pick<Message, "role" | "speaker" | "content" | "stage">[]): ChatMessage[] {
   return history.slice(-12).map(m => ({
     role: m.role === "user" ? "user" : "assistant",
-    content: m.role === "user" ? m.content : `${m.speaker}: ${m.content}`,
+    content: m.role === "user" ? fenceMember(m.content) : `${m.speaker}: ${m.content}`,
   }));
 }
 
@@ -70,10 +71,17 @@ export function setLlmTransportForTests(next: LlmTransport | null) {
 
 async function llm(messages: ChatMessage[], clientApiKey?: string, ceoName?: string, meta?: LogMeta): Promise<string> {
   const logger = meta?.logger;
-  return transport(messages.map(message => ({
-    ...message,
-    content: personalizeForCeo(message.content, ceoName),
-  })), clientApiKey, logger ? {
+  // The data-boundary rule rides on the first system prompt of every call, so
+  // no stage can reach the model without it (WBR-373, Developer 97).
+  let ruled = false;
+  return transport(messages.map(message => {
+    let content = personalizeForCeo(message.content, ceoName);
+    if (message.role === "system" && !ruled) {
+      ruled = true;
+      content = `${content}\n\n${DATA_BOUNDARY_RULE}`;
+    }
+    return { ...message, content };
+  }), clientApiKey, logger ? {
     stage: meta?.stage,
     speaker: meta?.speaker,
     record: (result) => logger.deepseek({
@@ -234,7 +242,7 @@ export async function runTonyIntake(input: {
         content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket("Tony", "tony_only", input.mode, input.audience)}\n${formatAdvisorVoiceContract("Tony", "tony_only", input.audience)}\n${input.context}\n\nHandle this directly. Short, direct, no essay.`
       },
       ...baseHistory,
-      { role: "user", content: input.userPrompt }
+      { role: "user", content: fenceMember(input.userPrompt) }
     ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_only", speaker: "Tony" });
 
     return {
@@ -414,7 +422,7 @@ If routing: write Tony's message first (120-200 words, full personality, bold, e
 \`\`\``
     },
     ...baseHistory,
-    { role: "user", content: input.userPrompt }
+    { role: "user", content: fenceMember(input.userPrompt) }
   ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "tony_intake", speaker: "Tony" });
 
   // ── CLARIFY PATH: Tony asked a question, no JSON block present ────────────────
@@ -576,7 +584,8 @@ ${formatAdvisorVoiceContract(advisor, `round_${round}`, input.audience)}
 
 ${input.context}
 
-ORIGINAL QUESTION (background only): ${sessionState.userPrompt}
+ORIGINAL QUESTION (background only):
+${fenceMember(sessionState.userPrompt)}
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
 ${isRound1
@@ -671,7 +680,8 @@ ${formatAdvisorVoiceContract("Chanos", `chanos_round_${round}`, input.audience)}
 
 ${input.context}
 
-ORIGINAL QUESTION (background only): ${sessionState.userPrompt}
+ORIGINAL QUESTION (background only):
+${fenceMember(sessionState.userPrompt)}
 TONY'S READ: ${sessionState.tonyIntakeMessage}
 
 ${latestAdvisorContext}
@@ -741,7 +751,8 @@ ${formatAdvisorVoiceContract("Tony", "close", input.audience)}
 
 ${input.context}
 
-ORIGINAL QUESTION: ${sessionState.userPrompt}
+ORIGINAL QUESTION:
+${fenceMember(sessionState.userPrompt)}
 
 FULL BOARDROOM DISCUSSION — READ ALL OF IT BEFORE YOU WRITE ANYTHING:
 ${turnsToContext(sessionState.allTurns)}
@@ -850,7 +861,7 @@ async function runAdvisorOneToOne(
       content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(advisor, "one_to_one", input.mode, input.audience)}\n${formatAdvisorVoiceContract(advisor, "one_to_one", input.audience)}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
     },
     ...historyMessages(input.history),
-    { role: "user", content: input.userPrompt }
+    { role: "user", content: fenceMember(input.userPrompt) }
   ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "advisor_one_to_one", speaker: advisor });
 
   return {
@@ -881,7 +892,7 @@ export async function runBoardroomEngine(input: {
         content: `${BOARDROOM_GUARDRAILS}\n\n${formatAdvisorVoicePacket(input.activeAdvisor, "one_to_one", input.mode, input.audience)}\n${formatAdvisorVoiceContract(input.activeAdvisor, "one_to_one", input.audience)}\n${input.context}\n\n1:1 work session. Build the actual artifact with them. No --- dividers. No ## headers.`
       },
       ...historyMessages(input.history),
-      { role: "user", content: input.userPrompt }
+      { role: "user", content: fenceMember(input.userPrompt) }
     ], input.clientApiKey, input.ceoName, { logger: input.log, stage: "advisor_one_to_one", speaker: input.activeAdvisor });
     return { turns: [{ speaker: input.activeAdvisor, stage: "advisor_one_to_one", content: raw }], cards: [] as GeneratedCard[], tension: "" };
   }

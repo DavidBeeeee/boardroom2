@@ -11,6 +11,8 @@ import { assertDeepSeekBudget, BudgetExceededError } from "@/lib/boardroom/budge
 import { createSupabaseIdempotencyStore, withIdempotency } from "@/lib/boardroom/idempotency";
 import { decisionMetadataForTurn } from "@/lib/boardroom/decision";
 import { stageFailureNotice, type FailedService } from "@/lib/boardroom/degraded";
+import { assertRateLimit, createSupabaseRateStore, RateLimitedError, rateLimitedBody } from "@/lib/boardroom/ratelimit";
+import { guardMemberInput } from "@/lib/boardroom/injection";
 import type { AdvisorCard, Message } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -69,11 +71,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
   let outcome;
   try {
     outcome = await withIdempotency(store, { workspaceId, scope: "chat_stage", key: idempotencyKey, userId: session.userId }, async () => {
+      await assertRateLimit(createSupabaseRateStore(session.supabase), { workspaceId, userId: session.userId, scope: "chat_stage" });
       await assertDeepSeekBudget(session.supabase, workspaceId);
       return await runStage();
     });
   } catch (error) {
-    if (error instanceof BudgetExceededError) return jsonError(error.message, 429);
+    if (error instanceof RateLimitedError || error instanceof BudgetExceededError) {
+      const limitLog = createBoardroomLogger(session.supabase, { workspaceId, conversationId, userId: session.userId });
+      if (error instanceof RateLimitedError) {
+        limitLog.limit({ kind: "rate_limit", scope: "chat_stage", detail: { retryAfterSeconds: error.retryAfterSeconds } });
+        await limitLog.flush();
+        return NextResponse.json(rateLimitedBody(error), { status: 429, headers: { "Retry-After": String(error.retryAfterSeconds) } });
+      }
+      limitLog.limit({ kind: "budget_cap", scope: "chat_stage" });
+      await limitLog.flush();
+      return jsonError(error.message, 429);
+    }
     if (error instanceof StageError) return NextResponse.json({ error: error.message, ...error.extra }, { status: error.status });
     const notice = degradedStage(error);
     return NextResponse.json({ error: notice.message, ...notice.extra }, { status: notice.status });
@@ -104,10 +117,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ workspaceI
     previousMessages.data?.reverse();
     if (loadError) throw degradedStage(loadError, "database");
 
+    // Documents stay fenced and flagged in every stage, not just the intake.
+    // Findings were already logged once by the chat turn, so not again here.
+    const guarded = guardMemberInput({ text: "", documents: (documents.data || []).slice(0, 6) });
+
     const contextText = buildBoardroomContext({
       guardrails: settings.data?.guardrails || "",
       profile: profile.data,
-      documents: documents.data || [],
+      documents: guarded.documents,
       memory: memoryForChannel(memory.data || [], "brainstorming").slice(0, 8),
       recentMessages: previousMessages.data || [],
       activeCard: null,
